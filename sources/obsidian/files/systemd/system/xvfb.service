@@ -1,0 +1,14 @@
+# cspell:ignore Xvfb nolisten
+[Unit]
+Description=Xvfb virtual X server on display :99
+After=systemd-tmpfiles-setup.service
+StartLimitIntervalSec=0
+[Service]
+PassEnvironment=SCREEN_WIDTH SCREEN_HEIGHT SCREEN_DEPTH
+ExecStart=/bin/sh -c 'exec /usr/bin/Xvfb :99 -screen 0 \
+  "$${SCREEN_WIDTH:-1920}x$${SCREEN_HEIGHT:-1080}x$${SCREEN_DEPTH:-24}" -nolisten tcp'
+ExecStartPost=/bin/sh -c 'until [ -S /tmp/.X11-unix/X99 ]; do sleep 0.1; done'
+Restart=always
+RestartSec=2
+[Install]
+WantedBy=multi-user.target

@@ -1,18 +1,25 @@
 #!/usr/bin/env bash
 # cspell:ignore obsidian novnc websockify xvfb x11vnc xfce xfwm xfconf xfdesktop gtkrc
-# cspell:ignore nologin libasound openrc procps mountkernfs dbus xfce4 thunar metacity
+# cspell:ignore nologin libasound dbus xfce4 thunar metacity libpam logind
 # cspell:ignore fastfetch awf nopasswd sudoers passwordless whiskermenu notifyd libxfce
 # cspell:ignore xkb libxklavier xdg initialized clipman rgba xsettings redmochi hintstyle
 # cspell:ignore hintslight xfconfd dconf ccd mateconf pastel greymond gawk gdir gname
-# cspell:ignore Metatheme tdir themerc tname vaio
+# cspell:ignore Metatheme tdir themerc tname vaio sysv startxfce
 set -xueo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends xvfb x11vnc novnc websockify openrc bc gawk \
-  xfce4 mate-terminal xfwm4 xfconf xfce4-session xfdesktop4 xfce4-panel dbus dbus-x11 \
+# keep the journal wrapper of the systemd installer as init: systemd-sysv (pulled by
+# dbus-user-session via libpam-systemd) gets its init symlink diverted aside
+dpkg-divert --local --no-rename --divert /usr/sbin/init.systemd-sysv --add /usr/sbin/init
+apt-get install -y --no-install-recommends xvfb x11vnc novnc websockify bc gawk xfce4 \
+  mate-terminal xfwm4 xfconf xfce4-session xfdesktop4 xfce4-panel dbus dbus-user-session \
   at-spi2-core fastfetch awf-gtk3 awf-gtk4 sudo wget ca-certificates libasound2t64 \
   libdbus-1-3 xfce4-whiskermenu-plugin xfce4-eyes-plugin xfce4-xkb-plugin xfce4-notifyd \
   xfce4-clipman-plugin gtk2-engines dconf-cli xfce4-terminal
+if [[ -L /usr/sbin/init || ! -x /usr/sbin/init ]]; then
+  echo 'journal wrapper /usr/sbin/init was replaced' >&2
+  exit 1
+fi
 _obsidian_ver='1.6.3'
 _obsidian_url="https://github.com/obsidianmd/obsidian-releases/releases/download/\
 v${_obsidian_ver}/obsidian_${_obsidian_ver}_amd64.deb"
@@ -22,7 +29,7 @@ dpkg -i "${_deb}" || apt-get install -fy --no-install-recommends
 rm -f "${_deb}"
 # install Redmond97 Rainy Day xfwm4+gtk theme from upstream checkout
 install -d -m 755 '/usr/share/themes/Redmond97 Rainy Day'
-cp -r '/shared/redmond97/Theme/no-csd/Redmond97 Rainy Day/.' \
+cp -r '/files/shared/redmond97/Theme/no-csd/Redmond97 Rainy Day/.' \
   '/usr/share/themes/Redmond97 Rainy Day/'
 # patch base_color: upstream uses #FFFFFF, we want a slightly darkened window bg
 sed -i 's/^base_color:#FFFFFF/base_color:#c1ccd9/' \
@@ -32,7 +39,7 @@ sed -i 's/@define-color base_color #FFFFFF;/@define-color base_color #c1ccd9;/' 
 # install Chicago95 Rainy Day theme: base from upstream Chicago95, colors from
 # Windows 98 Rainy Day palette (converted via ChicagoPlus.py, base_color patched)
 install -d -m 755 '/usr/share/themes/Chicago95 Rainy Day'
-cp -r /shared/chicago95/Theme/Chicago95/. '/usr/share/themes/Chicago95 Rainy Day/'
+cp -r /files/shared/chicago95/Theme/Chicago95/. '/usr/share/themes/Chicago95 Rainy Day/'
 # overlay Rainy Day-colored gtk.css and xfwm4/themerc over the Chicago95 base
 cp /files/conf/chicago95-rainy-day/gtk-3.0/gtk.css \
   '/usr/share/themes/Chicago95 Rainy Day/gtk-3.0/gtk.css'
@@ -44,7 +51,7 @@ s/selected_bg_color:#000080/selected_bg_color:#4f657d/' \
   '/usr/share/themes/Chicago95 Rainy Day/gtk-2.0/gtkrc'
 # install Greymond themes: each variant has its own gtk-2.0/gtk-3.0 with shared
 # widgets via symlinks; cp -rL resolves symlinks at copy time
-for _gdir in /shared/greymond/src/Greymond-*/; do
+for _gdir in /files/shared/greymond/src/Greymond-*/; do
   _gname="$(basename "${_gdir}")"
   install -d -m 755 "/usr/share/themes/${_gname}"
   cp -rL "${_gdir}." "/usr/share/themes/${_gname}/"
@@ -65,12 +72,12 @@ EOF
 done
 # copy shared xfwm4 from Greymond base (neutral grey, used by all variants)
 for _gdir in /usr/share/themes/Greymond-*/; do
-  cp -r /shared/greymond/src/Greymond/xfwm4/. "${_gdir}xfwm4/"
+  cp -r /files/shared/greymond/src/Greymond/xfwm4/. "${_gdir}xfwm4/"
 done
 # install Pastel2K themes: run gen_theme.sh for each conf, output to /usr/share/themes
-_pastel_tools='/shared/pastel2k/tools'
-for _conf in /shared/pastel2k/conf/*.conf \
-  /shared/pastel2k/conf/vaio/*.conf; do
+_pastel_tools='/files/shared/pastel2k/tools'
+for _conf in /files/shared/pastel2k/conf/*.conf \
+  /files/shared/pastel2k/conf/vaio/*.conf; do
   _workdir="$(mktemp -d)"
   cp "${_pastel_tools}/base.tar.gz" "${_pastel_tools}/gen_theme.sh" \
     "${_pastel_tools}/theme_default" "${_conf}" "${_workdir}/"
@@ -89,15 +96,15 @@ done
 unset _gdir _gname _pastel_tools _conf _workdir _tdir _tname
 # install Redmond97 icon set (bundled in Redmond97 repo under Extras/Icons/)
 install -d -m 755 /usr/share/icons/Redmond97
-cp -r /shared/user-config/.icons/Redmond97/. /usr/share/icons/Redmond97/
+cp -r /files/shared/user-config/.icons/Redmond97/. /usr/share/icons/Redmond97/
 gtk-update-icon-cache -f -t /usr/share/icons/Redmond97 || true
-useradd -m -s /bin/bash obsidian
+useradd -m -u 1000 -s /bin/bash obsidian
 install -d -m 755 /vault /config
 chown obsidian:obsidian /vault /config
 # passwordless sudo for the obsidian user
 echo 'obsidian ALL=(ALL) NOPASSWD:ALL' >/etc/sudoers.d/obsidian
 chmod 440 /etc/sudoers.d/obsidian
-# store default xfce4/gtk configs in /etc/xdg-obsidian/ — entrypoint.sh
+# store default xfce4/gtk configs in /etc/xdg-obsidian/ — obsidian-config.service
 # copies them to /config/ (XDG_CONFIG_HOME) on first container start
 _xdg='/etc/xdg-obsidian'
 install -d -m 755 "${_xdg}/xfce4/xfconf/xfce-perchannel-xml"
@@ -127,7 +134,7 @@ install -m 644 /files/conf/gtkrc-2.0 /home/obsidian/.gtkrc-2.0
 install -d -m 755 /home/obsidian/.local/share/applications
 chown -R obsidian:obsidian /home/obsidian/.local /home/obsidian/.gtkrc-2.0
 # configure mate-terminal profile via dconf compile (no dbus required at build time)
-# result goes into xdg template — entrypoint.sh copies it to /config/dconf/user
+# result into xdg template — obsidian-config.service copies it to /config/dconf/user
 install -d -m 755 "${_xdg}/dconf"
 dconf compile "${_xdg}/dconf/user" /files/conf/dconf
 # set mate-terminal as preferred terminal emulator for exo-open
@@ -135,18 +142,22 @@ dconf compile "${_xdg}/dconf/user" /files/conf/dconf
 cat >"${_xdg}/xfce4/helpers.rc" <<'EOF'
 TerminalEmulator=mate-terminal
 EOF
-# install obsidian wrapper that resolves dbus session address at runtime
-install -m 755 /files/obsidian-launch.sh /usr/local/bin/obsidian-launch.sh
-# install openrc service scripts
-for _svc in xvfb dbus xfce x11vnc novnc obsidian; do
-  install -m 755 "/files/init.d/${_svc}" "/etc/init.d/${_svc}"
-  rc-update add "${_svc}" default
-done
-install -m 755 /files/entrypoint.sh /entrypoint.sh
-# configure openrc for container use (no cgroups, no hardware)
-sed -i 's/#rc_sys=""/rc_sys="docker"/' /etc/rc.conf
-# remove procps init script that depends on non-existent mountkernfs
-rm -f /etc/init.d/procps
+# system units: virtual display, VNC, noVNC and first-run /config seeding
+install -m 644 -t /etc/systemd/system /files/systemd/system/*.service
+install -d -m 755 /etc/systemd/system/user@1000.service.d
+install -m 644 /files/systemd/system/user@1000.service.d/obsidian.conf \
+  /etc/systemd/system/user@1000.service.d/obsidian.conf
+# user units: XFCE session and Obsidian, started by the lingering user manager
+install -d -m 755 /etc/systemd/user
+install -m 644 -t /etc/systemd/user /files/systemd/user/*.service
+install -d -m 755 /etc/environment.d
+install -m 644 /files/environment.d/60-obsidian.conf /etc/environment.d/60-obsidian.conf
+systemctl enable xvfb.service x11vnc.service novnc.service
+systemctl --global enable xfce-session.service obsidian.service
+systemctl disable ssh.service
+# logind starts user@1000.service with the user bus at boot for lingering users
+install -d -m 755 /var/lib/systemd/linger
+touch /var/lib/systemd/linger/obsidian
 # cleanup
 apt-get clean
 rm -Rf /usr/share/doc /usr/share/man /var/lib/apt/lists/* /root/.cache /files \

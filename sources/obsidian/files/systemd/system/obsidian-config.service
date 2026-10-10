@@ -1,0 +1,10 @@
+# cspell:ignore oneshot
+[Unit]
+Description=Seed /config with default XFCE and GTK settings
+ConditionPathExists=!/config/.xdg-initialized
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/cp -r --update=none /etc/xdg-obsidian/. /config/
+ExecStart=/bin/chown -R obsidian:obsidian /config
+ExecStart=/usr/bin/touch /config/.xdg-initialized

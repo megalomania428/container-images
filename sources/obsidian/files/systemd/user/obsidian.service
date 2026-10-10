@@ -1,0 +1,12 @@
+[Unit]
+Description=Obsidian
+PartOf=graphical-session.target
+After=graphical-session.target
+StartLimitIntervalSec=0
+[Service]
+WorkingDirectory=/vault
+ExecStart=/usr/bin/obsidian --no-sandbox --disable-gpu-sandbox /vault
+Restart=always
+RestartSec=2
+[Install]
+WantedBy=graphical-session.target

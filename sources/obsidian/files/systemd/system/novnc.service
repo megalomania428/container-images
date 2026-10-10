@@ -1,0 +1,12 @@
+# cspell:ignore novnc websockify
+[Unit]
+Description=noVNC web client on port 6080
+Wants=x11vnc.service
+After=x11vnc.service
+StartLimitIntervalSec=0
+[Service]
+ExecStart=/usr/bin/websockify --web /usr/share/novnc 6080 localhost:5900
+Restart=always
+RestartSec=1
+[Install]
+WantedBy=multi-user.target

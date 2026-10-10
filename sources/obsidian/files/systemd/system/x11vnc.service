@@ -1,0 +1,13 @@
+# cspell:ignore Xvfb nopw rfbport noxrecord nowireframe
+[Unit]
+Description=x11vnc VNC server for display :99
+Wants=xvfb.service
+After=xvfb.service
+StartLimitIntervalSec=0
+[Service]
+ExecStart=/usr/bin/x11vnc -display :99 -forever -shared -nopw -rfbport 5900 -noxrecord \
+  -nowireframe -wait 5 -defer 5
+Restart=always
+RestartSec=3
+[Install]
+WantedBy=multi-user.target
