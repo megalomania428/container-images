@@ -26,6 +26,7 @@ jobs:
         id: define-matrix
         env:
           GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           source _shared/_all/matrix.sh
           echo "matrix=${PKG_MATRIX}" >> "${GITHUB_OUTPUT}"

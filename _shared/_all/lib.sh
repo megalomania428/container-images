@@ -70,6 +70,17 @@ _fill_all_images() {
     [[ -d "${_dir}" ]] && IMAGES_DIRS+=("${_dir%/}")
   done
 }
+# Fallback to every image only on the default branch; elsewhere build nothing.
+_fill_fallback_images() {
+  IMAGES_DIRS=()
+  local _default="${DEFAULT_BRANCH:-${CI_DEFAULT_BRANCH:-master}}"
+  local _ref="${GITHUB_REF:-refs/heads/${CI_COMMIT_BRANCH:-}}"
+  if [[ "${_ref}" == "refs/heads/${_default}" ]]; then
+    _fill_all_images
+  else
+    echo "fallback to all images is allowed only on [${_default}] branch, skipping"
+  fi
+}
 # Source vars.sh without side effects and print the requested metadata.
 _probe_vars() {
   local _image="$1" _field="$2"

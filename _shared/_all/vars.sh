@@ -37,19 +37,20 @@ else
   /usr/bin/env printf "\n———⟨ diff: ⟩———\n\
 %s\n\n———⟨ images: ⟩———\n" "${diff}"
   # empty diff (e.g. initial push with null before-sha, or nothing outside
-  # sources/) — fall back to rebuilding everything, matching old behavior
+  # sources/) — fall back to rebuilding everything on the default branch only
   if [[ -z "${diff//[[:space:]]/}" ]]; then
-    _fill_all_images
+    _fill_fallback_images
   elif /usr/bin/env printf '%s\n' "${diff}" |
     /usr/bin/env grep -qE '^(_shared/_all/|_shared/vars\.sh$)'; then
     # framework-level change: rebuild everything
     _fill_all_images
   else
     declare -A picked=()
-    # direct hits under sources/<image>/
+    # direct hits under sources/<image>/, skipping sources removed by the diff
     while IFS= read -r _line; do
       [[ -z "${_line}" ]] && continue
-      if [[ "${_line}" =~ ^sources/([^/]+)/ ]]; then
+      if [[ "${_line}" =~ ^sources/([^/]+)/ ]] &&
+        [[ -f "sources/${BASH_REMATCH[1]}/vars.sh" ]]; then
         picked["sources/${BASH_REMATCH[1]}"]=1
       fi
     done <<<"${diff}"
@@ -84,10 +85,10 @@ else
       done <<<"${_assets}"
       [[ ${_hit} -eq 1 ]] && picked["${_image}"]=1
     done
-    # if diff had changes but nothing matched any manifest, rebuild everything
-    # (e.g. changes only in .github/ or other non-sources paths)
+    # if diff had changes but nothing matched any manifest, rebuild everything on
+    # the default branch only (e.g. changes only in .github/ or removed sources)
     if [[ ${#picked[@]} -eq 0 ]]; then
-      _fill_all_images
+      _fill_fallback_images
     else
       IMAGES_DIRS=()
       readarray -t IMAGES_DIRS < <(
