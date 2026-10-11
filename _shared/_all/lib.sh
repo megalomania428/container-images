@@ -63,12 +63,13 @@ _diff_lines() {
     ;;
   esac
 }
-# Fill IMAGES_DIRS with every directory under sources/.
+# Fill IMAGES_DIRS with every directory under sources/ that has vars.sh.
 _fill_all_images() {
   IMAGES_DIRS=()
   for _dir in sources/*/; do
-    [[ -d "${_dir}" ]] && IMAGES_DIRS+=("${_dir%/}")
+    [[ -f "${_dir}vars.sh" ]] && IMAGES_DIRS+=("${_dir%/}")
   done
+  return 0
 }
 # Fallback to every image only on the default branch; elsewhere build nothing.
 _fill_fallback_images() {
