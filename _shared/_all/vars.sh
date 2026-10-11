@@ -10,7 +10,15 @@ source "${MY_PATH}/lib.sh"
 # MANUAL_IMAGES_DIRS='docker-alpine/ systemd-ubuntu-22_04/' ./build.sh for manual build
 : "${MANUAL_IMAGES_DIRS:=}"
 /usr/bin/env printf "\n———⟨ environment: ⟩———\n"
-set
+# only inputs of the image selection and the build, never secrets
+for _var in MANUAL_IMAGES_DIRS MANUAL_DIFF GITHUB_EVENT_NAME GITHUB_EVENT_BEFORE \
+  GITHUB_SHA GITHUB_REF GITHUB_BASE_REF DEFAULT_BRANCH CI_PIPELINE_SOURCE \
+  CI_COMMIT_BEFORE_SHA CI_COMMIT_SHA CI_COMMIT_BRANCH CI_COMMIT_TAG CI_DEFAULT_BRANCH \
+  CI_MERGE_REQUEST_SOURCE_BRANCH_NAME CI_MERGE_REQUEST_TARGET_BRANCH_NAME \
+  TARGET_REGISTRY NPM_REGISTRY NPM_IMAGE NPM_REPO_URL PUBLISH_MODE VERSION_SUFFIX \
+  DEV_TAG; do
+  /usr/bin/env printf '%s=%s\n' "${_var}" "${!_var:-}"
+done
 /usr/bin/env which git >/dev/null ||
   if /usr/bin/env fgrep debian /etc/os-release; then
     export DEBIAN_FRONTEND=noninteractive
