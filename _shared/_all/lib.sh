@@ -37,7 +37,7 @@ _diff_lines() {
     /usr/bin/env printf '%s\n' "${MANUAL_DIFF}"
     return
   fi
-  local _before
+  local _before _source _target
   case "${GITHUB_EVENT_NAME:-${CI_PIPELINE_SOURCE:-}}" in
   push)
     _before="${GITHUB_EVENT_BEFORE:-${CI_COMMIT_BEFORE_SHA:-}}"
@@ -53,9 +53,10 @@ _diff_lines() {
       "remotes/origin/${GITHUB_BASE_REF:-master}"...HEAD 2>/dev/null || true
     ;;
   merge_request_event)
-    /usr/bin/env git diff --name-only \
-      "remotes/origin/${CI_MERGE_REQUEST_SOURCE_BRANCH_NAME}" \
-      "remotes/origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}" 2>/dev/null || true
+    _target="remotes/origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:?is required}"
+    _source="remotes/origin/${CI_MERGE_REQUEST_SOURCE_BRANCH_NAME:?is required}"
+    # changes of the source branch since its merge base with the target branch
+    /usr/bin/env git diff --name-only "${_target}...${_source}" 2>/dev/null || true
     ;;
   *)
     # local invocation: compare working tree to HEAD
