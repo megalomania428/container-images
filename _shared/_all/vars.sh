@@ -25,8 +25,13 @@ source "${MY_PATH}/../vars.sh"
 
 if [[ "${MANUAL_IMAGES_DIRS}" != '' ]]; then
   IMAGES_DIRS=()
+  declare -A manual_seen=()
   for dir in ${MANUAL_IMAGES_DIRS}; do
     while [[ "${dir}" == */ ]]; do dir="${dir%/}"; done
+    dir="${dir#sources/}"
+    # keep the first occurrence only: the order matters for DEPENDS builds
+    [[ -n "${manual_seen[${dir}]:-}" ]] && continue
+    manual_seen["${dir}"]=1
     IMAGES_DIRS+=("sources/${dir}")
   done
 elif [[ "${GITHUB_EVENT_NAME:-${CI_PIPELINE_SOURCE:-}}" == 'schedule' ]]; then
