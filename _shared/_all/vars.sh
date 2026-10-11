@@ -85,6 +85,22 @@ else
         [[ -z "${_entry}" ]] && continue
         _entry_src="${_entry%%:*}"
         _entry_src="${_entry_src#./}"
+        if [[ "${_entry_src}" == *'*'* ]]; then
+          # glob: match the pattern itself so removed files still hit; * crosses /
+          # here, and **/ becomes * to match zero directories as globstar does;
+          # a directory glob like dir/*/ hits only paths below its directories
+          _pattern="${_entry_src//\*\*\//*}"
+          while IFS= read -r _diff_line; do
+            [[ -z "${_diff_line}" ]] && continue
+            # shellcheck disable=2053
+            if [[ "${_diff_line}" == ${_pattern} ]] ||
+              [[ "${_diff_line}" == ${_pattern%/}/* ]]; then
+              _hit=1
+              break 2
+            fi
+          done <<<"${diff}"
+          continue
+        fi
         while IFS= read -r _expanded; do
           [[ -z "${_expanded}" ]] && continue
           # use bash string comparison to avoid regex special chars in paths
