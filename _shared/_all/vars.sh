@@ -37,6 +37,9 @@ if [[ "${MANUAL_IMAGES_DIRS}" != '' ]]; then
 elif [[ "${GITHUB_EVENT_NAME:-${CI_PIPELINE_SOURCE:-}}" == 'schedule' ]]; then
   # cron: rebuild everything, no diff needed
   _fill_all_images
+elif [[ "${GITHUB_REF:-}" == refs/tags/* || -n "${CI_COMMIT_TAG:-}" ]]; then
+  # tag push: a release must contain every AppImage, no diff needed
+  _fill_all_images
 else
   diff="$(_diff_lines)"
   /usr/bin/env printf "\n———⟨ diff: ⟩———\n\
