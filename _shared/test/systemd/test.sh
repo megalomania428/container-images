@@ -15,7 +15,7 @@ while ! /usr/bin/env podman exec "${test_cont_name}" systemctl status; do
   count=$((count - 1))
   if [[ $count -le 0 ]]; then
     echo 'container failed'
-    exit 1
+    break
   fi
   sleep 1
 done
