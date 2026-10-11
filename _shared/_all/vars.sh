@@ -41,8 +41,7 @@ else
   diff="$(_diff_lines)"
   /usr/bin/env printf "\n———⟨ diff: ⟩———\n\
 %s\n\n———⟨ images: ⟩———\n" "${diff}"
-  # empty diff (e.g. initial push with null before-sha, or nothing outside
-  # sources/) — fall back to rebuilding everything on the default branch only
+  # empty diff — fall back to rebuilding everything on the default branch only
   if [[ -z "${diff//[[:space:]]/}" ]]; then
     _fill_fallback_images
   elif /usr/bin/env printf '%s\n' "${diff}" |

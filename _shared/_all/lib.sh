@@ -38,6 +38,7 @@ _diff_lines() {
     return
   fi
   local _before _source _target
+  local -a _range
   case "${GITHUB_EVENT_NAME:-${CI_PIPELINE_SOURCE:-}}" in
   push)
     _before="${GITHUB_EVENT_BEFORE:-${CI_COMMIT_BEFORE_SHA:-}}"
@@ -45,24 +46,27 @@ _diff_lines() {
     if [[ -z "${_before}" ]] || [[ "${_before}" =~ ^0+$ ]]; then
       _before='HEAD^1'
     fi
-    /usr/bin/env git diff --name-only \
-      "${_before}" "${GITHUB_SHA:-${CI_COMMIT_SHA:-HEAD}}" 2>/dev/null || true
+    _range=("${_before}" "${GITHUB_SHA:-${CI_COMMIT_SHA:-HEAD}}")
     ;;
   pull_request)
-    /usr/bin/env git diff --name-only \
-      "remotes/origin/${GITHUB_BASE_REF:-master}"...HEAD 2>/dev/null || true
+    _range=("remotes/origin/${GITHUB_BASE_REF:-master}...HEAD")
     ;;
   merge_request_event)
     _target="remotes/origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:?is required}"
     _source="remotes/origin/${CI_MERGE_REQUEST_SOURCE_BRANCH_NAME:?is required}"
     # changes of the source branch since its merge base with the target branch
-    /usr/bin/env git diff --name-only "${_target}...${_source}" 2>/dev/null || true
+    _range=("${_target}...${_source}")
     ;;
   *)
     # local invocation: compare working tree to HEAD
-    /usr/bin/env git diff --name-only HEAD 2>/dev/null || true
+    _range=('HEAD')
     ;;
   esac
+  # a git failure must not look like an empty diff
+  if ! /usr/bin/env git diff --name-only "${_range[@]}"; then
+    echo "git diff --name-only ${_range[*]} failed" >&2
+    return 66
+  fi
 }
 # Fill IMAGES_DIRS with every directory under sources/ that has vars.sh.
 _fill_all_images() {
