@@ -70,6 +70,14 @@ jobs:
             echo 'skipping ghcr login for npm package'
           fi
           MANUAL_IMAGES_DIRS='${{ matrix.tag }}/' _shared/_all/push.sh
+  matrix-tests:
+    name: matrix tests
+    timeout-minutes: 5
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: run define-matrix tests
+        run: _shared/test/jobs/github-matrix.sh
   MegaLinter:
     name: MegaLinter
     timeout-minutes: 11
@@ -89,6 +97,7 @@ jobs:
     runs-on: ubuntu-24.04
     needs:
       - containers
+      - matrix-tests
       - MegaLinter
     if: github.event_name == 'pull_request'
     permissions:
