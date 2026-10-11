@@ -83,9 +83,15 @@ _fill_fallback_images() {
   fi
 }
 # Source vars.sh without side effects and print the requested metadata.
+# A missing or failing vars.sh returns 66 instead of printing defaults.
 _probe_vars() {
-  local _image="$1" _field="$2"
+  local _image="$1" _field="$2" _rc
+  # errexit is reset inside command substitution: enable it in the subshell below
+  # and keep it off here until the exit code is collected
+  local -
+  set +e
   (
+    set -e
     # shellcheck disable=2034
     TAG="${_image#sources/}"
     # shellcheck disable=2034
@@ -107,6 +113,11 @@ _probe_vars() {
       ;;
     esac
   )
+  _rc=$?
+  if [[ ${_rc} -ne 0 ]]; then
+    echo "failed to read [${_image}/vars.sh]: exit code ${_rc}" >&2
+    return 66
+  fi
 }
 # Add every npm source to the associative array named by the first argument.
 _pick_npm_sources() {
