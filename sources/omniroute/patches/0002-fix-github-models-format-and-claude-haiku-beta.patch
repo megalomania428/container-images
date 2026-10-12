@@ -21,11 +21,18 @@ index 6a2e82a6..6ed630e7 100644
        { id: "oswe-vscode-prime", name: "Raptor Mini", targetFormat: "openai-responses" },
        //{ id: "?", name: "Goldeneye" },
      ],
-diff --git a/open-sse/executors/base.ts b/open-sse/executors/base.ts
-index 6fa9f258..24c53840 100644
 --- a/open-sse/executors/base.ts
 +++ b/open-sse/executors/base.ts
-@@ -838,7 +838,7 @@ export class BaseExecutor {
+@@ -715,7 +715,7 @@
+             // Default CC logic when no override headers are present
+             const isHaiku = typeof tb.model === "string" && tb.model.includes("haiku");
+             if (isHaiku) {
+-              delete tb.thinking;
++              // Keep Haiku thinking; context_management is re-paired below.
+               delete tb.output_config;
+               delete tb.context_management;
+             } else if (tb.thinking === undefined && tb.output_config === undefined) {
+@@ -838,7 +838,7 @@
            const ccHeaders: Record<string, string> = {
              Accept: "application/json",
              "anthropic-version": "2023-06-01",
@@ -80,3 +87,27 @@ index 30e081ac..691ca4fb 100644
    flags.push(
      "interleaved-thinking-2025-05-14",
      "redact-thinking-2026-02-12",
+--- a/open-sse/translator/request/openai-responses.ts
++++ b/open-sse/translator/request/openai-responses.ts
+@@ -307,6 +307,21 @@
+     result[RESPONSES_STORE_MARKER] = root.store;
+   }
+   delete result.store;
++  if (
++    root.reasoning && typeof root.reasoning === 'object' && !Array.isArray(root.reasoning)
++  ) {
++    const reasoningRec = toRecord(root.reasoning);
++    const effort = toString(reasoningRec.effort);
++    if (effort && result.reasoning_effort === undefined) {
++      result.reasoning_effort = normalizeResponsesReasoningEffort(effort);
++    }
++  }
++  if (root.reasoning_effort !== undefined) {
++    const effort = normalizeResponsesReasoningEffort(root.reasoning_effort);
++    if (effort) {
++      result.reasoning_effort = effort;
++    }
++  }
+   delete result.reasoning;
+ 
+   return result;
