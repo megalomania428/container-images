@@ -27,9 +27,15 @@ apply_flush_line_patch() {
     return
   fi
   echo "Applying flush-line.patch patch…"
+  # patch paths start with lib/python3.X/site-packages/, strip them for any Python
   # shellcheck disable=2164
-  cd "${python_root}"
-  patch -p0 <"${patch_file}"
+  cd "${python_root}"/lib/python*/site-packages
+  # newer ansible-core keeps the flush block commented with OSError instead of IOError
+  if grep -q '^ *# except OSError as e:$' ansible/utils/display.py; then
+    sed 's/except IOError as e:/except OSError as e:/' "${patch_file}" | patch -p3
+  else
+    patch -p3 <"${patch_file}"
+  fi
 }
 
 copy_system_libs() {

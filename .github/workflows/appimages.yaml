@@ -61,19 +61,7 @@ jobs:
         run: |
           sudo ./podman.sh
           _tag='${{ matrix.tag }}'
-          # Images that use ansible-appimage as their build container.
-          # Everyone else builds from their own image.
-          _ansible_appimage_patterns=(
-            '^ansible-[0-9]{2}$'
-          )
-          _dirs="${_tag}/"
-          for _p in "${_ansible_appimage_patterns[@]}"; do
-            if [[ "${_tag}" =~ ${_p} ]]; then
-              _dirs='ansible-appimage/'
-              break
-            fi
-          done
-          MANUAL_IMAGES_DIRS="${_dirs}" _shared/_all/build.sh
+          APPIMAGE_TARGET="${_tag}" MANUAL_IMAGES_DIRS="${_tag}/" _shared/_all/build.sh
           TAG="${_tag}" _shared/_all/appimage.sh
       - name: make draft and upload AppImage
         if: >-

@@ -1,23 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # Builds AppImage for ansible-NN or mkosi-NN tags.
-# Runs inside ansible-appimage container.
+# Runs inside the builder stage of the ansible image built with APPIMAGE_TARGET.
 # Usage: TAG=ansible-11 IMAGE_VER=001 build-appimage.sh
-# Requires pyenv with Python and appimagetool in /usr/local/bin
+# Requires pyenv with Python, downloads appimagetool to /usr/local/bin if missing
 : "${TAG:?TAG environment variable must be set (e.g., ansible-11)}"
 : "${IMAGE_VER:?IMAGE_VER environment variable must be set (e.g., 001)}"
 APPIMAGETOOL='/usr/local/bin/appimagetool.AppImage'
-if [[ ! -f "${APPIMAGETOOL}" ]]; then
-  echo "Error: appimagetool not found at ${APPIMAGETOOL}"
-  echo "Make sure ansible-appimage container was built correctly"
-  exit 1
+if [[ ! -x "${APPIMAGETOOL}" ]]; then
+  echo 'Downloading appimagetool…'
+  curl -fsSLm 111 -o "${APPIMAGETOOL}" "https://github.com/AppImage/appimagetool/\
+releases/latest/download/appimagetool-$(uname -m).AppImage"
+  chmod +x "${APPIMAGETOOL}"
 fi
 # Source common functions from mounted workspace so changes take effect
-# without rebuilding the ansible-appimage container
+# without rebuilding the builder image
 # shellcheck disable=SC1091
 source /workspace/_shared/install/ansible/common.sh
 # Install runtime packages inside the running container so dpkg -L works.
-# This avoids rebuilding ansible-appimage when package list changes.
+# This avoids rebuilding the builder image when package list changes.
 export DEBIAN_FRONTEND=noninteractive
 echo "Installing runtime packages…"
 apt-get update -q
@@ -31,8 +32,8 @@ esac
 apt-get install -y --no-install-recommends "${_rt_pkgs[@]}" "${_add_pkgs[@]}"
 rm -rf /var/lib/apt/lists/*
 APP_NAME="${TAG}-${IMAGE_VER}"
-APPDIR="${PYENV_ROOT}/versions/${PYTHON_VERSION}"
-echo "Building AppImage for ${TAG} with Python ${PYTHON_VERSION}"
+APPDIR="${PYENV_ROOT}/versions/${PYENV_VERSION_PYTHON}"
+echo "Building AppImage for ${TAG} with Python ${PYENV_VERSION_PYTHON}"
 cd "$APPDIR"
 # Create sitecustomize.py for portable shebangs
 echo "Creating sitecustomize.py…"
@@ -45,7 +46,7 @@ echo "Upgrading pip, setuptools, wheel…"
 bin/python -m pip install --upgrade --force-reinstall pip setuptools wheel
 case "${TAG}" in
 ansible-*)
-  REQUIREMENTS="/workspace/sources/${TAG}/files/requirements.txt"
+  REQUIREMENTS="/workspace/sources/${TAG}/requirements.txt"
   if [[ ! -f "${REQUIREMENTS}" ]]; then
     echo "Error: requirements.txt not found at ${REQUIREMENTS}"
     exit 1

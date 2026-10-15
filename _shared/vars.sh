@@ -2,9 +2,13 @@
 # cspell:ignore gpath nullglob
 set -ueo pipefail
 # shellcheck disable=2034
-PYTHON_VERSION='3.11.11'
+PYENV_VERSION_PYTHON="${BUILD_PYENV_VERSION_PYTHON:-3.11.17}"
 # shellcheck disable=2034
 PYENV_ROOT='/pye'
+# shellcheck disable=2034
+ANSIBLE_BASE_IMAGE='mirror.gcr.io/ubuntu:24.04'
+# shellcheck disable=2034
+APPIMAGE_BASE_IMAGE='mirror.gcr.io/ubuntu:18.04'
 # Usage: checkout_upstream <repo_url> <repo_tag> <upstream_dir>
 checkout_upstream() {
   local _repo_url="$1" _repo_tag="$2" _upstream="$3"

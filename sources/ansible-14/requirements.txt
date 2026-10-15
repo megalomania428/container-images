@@ -1,6 +1,6 @@
 # pip install ansible==14.5.0 ansible-core==2.21.5 \
 # ansible-compat  molecule docker molecule-docker yapf psutil python-dateutil bcrypt \
-# passlib netaddr yamllint ansible-lint podman molecule-podman tomli lz4 zstd lzlib \
+# passlib netaddr yamllint ansible-lint podman molecule-podman tomli lz4 zstd lzip \
 # pytest hvac click-help-colors freezegun importlib_metadata jmespath ruamel.yaml.clib \
 # zipp typing_extensions
 ansible-compat==26.10.0
@@ -30,9 +30,8 @@ Jinja2==3.1.6
 jmespath==1.1.0
 jsonschema-specifications==2025.9.1
 jsonschema==4.26.0
-linhhh==1.0.0
 lz4==4.4.5
-lzlib==1.0.0
+lzip==1.2.0
 markdown-it-py==4.2.0
 MarkupSafe==3.0.4
 mdurl==0.1.2

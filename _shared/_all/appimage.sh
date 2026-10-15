@@ -25,12 +25,13 @@ texlive-*)
   BUILD_SCRIPT='texlive-appimage.sh'
   ;;
 *)
-  BUILD_IMAGE="${TARGET_REGISTRY}/ansible-appimage:latest"
+  BUILD_IMAGE="localhost/${TAG}-appimage:local" # DevSkim: ignore DS162092
   BUILD_SCRIPT='ansible/build-appimage.sh'
   ;;
 esac
 podman run --log-driver=none --rm --device /dev/fuse --cap-add SYS_ADMIN \
   -v "$PWD:/workspace:ro" -v "$PWD/appimage-output:/output:z" --workdir /workspace \
-  -e TAG="${TAG}" -e IMAGE_VER="${IMAGE_VER}" "${BUILD_IMAGE}" \
+  -e TAG="${TAG}" -e IMAGE_VER="${IMAGE_VER}" \
+  -e PYENV_VERSION_PYTHON="${PYENV_VERSION_PYTHON}" "${BUILD_IMAGE}" \
   bash "/workspace/_shared/install/${BUILD_SCRIPT}"
 echo "AppImage built successfully: appimage-output/${TAG}-${IMAGE_VER}.AppImage"

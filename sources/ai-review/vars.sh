@@ -24,3 +24,5 @@ if [[ -z "${PUSHING:-}" ]]; then
   BUILD_CONTEXT_DIR="${_upstream}"
   unset _patch _upstream _repo_tag
 fi
+# shellcheck disable=2034
+PODMAN_EXTRA_ARGS=(--build-arg PYTHON_VERSION='3.11.17-slim-trixie')

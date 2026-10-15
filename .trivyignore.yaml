@@ -3,57 +3,57 @@ vulnerabilities:
   # (high) fixed in ansible 7.0.0
   - id: CVE-2022-3697
     paths:
-      - "sources/ansible-06/files/requirements.txt"
+      - "sources/ansible-06/requirements.txt"
   # (medium) fixed in ansible 8.5.0
   - id: CVE-2023-5115
     paths:
-      - "sources/ansible-06/files/requirements.txt"
-      - "sources/ansible-07/files/requirements.txt"
+      - "sources/ansible-06/requirements.txt"
+      - "sources/ansible-07/requirements.txt"
   # (medium) fixed in ansible-core 2.17.6, 2.16.13
   - id: CVE-2024-8775
     paths:
-      - "sources/ansible-06/files/requirements.txt"
-      - "sources/ansible-07/files/requirements.txt"
-      - "sources/ansible-08/files/requirements.txt"
+      - "sources/ansible-06/requirements.txt"
+      - "sources/ansible-07/requirements.txt"
+      - "sources/ansible-08/requirements.txt"
   # (high) fixed in ansible 08.0.0 and higher
   - id: CVE-2023-4237
     paths:
-      - "sources/ansible-06/files/requirements.txt"
-      - "sources/ansible-07/files/requirements.txt"
+      - "sources/ansible-06/requirements.txt"
+      - "sources/ansible-07/requirements.txt"
   # (high) fixed in ansible-core 2.16.1, 2.15.8, 2.14.12
   - id: CVE-2023-5764
     paths:
-      - "sources/ansible-06/files/requirements.txt"
+      - "sources/ansible-06/requirements.txt"
   # (medium) fixed in ansible-core 2.14.14, 2.16.3, 2.15.9
   - id: CVE-2024-0690
     paths:
-      - "sources/ansible-06/files/requirements.txt"
+      - "sources/ansible-06/requirements.txt"
   # (medium) fixed in ansible-core 2.15.13rc1, 2.16.13rc1, 2.17.6rc1, 2.18.0rc2
   - id: CVE-2024-9902
     paths:
-      - "sources/ansible-06/files/requirements.txt"
+      - "sources/ansible-06/requirements.txt"
   # (medium) fixed in ansible-core 2.18.1rc1, 2.17.7rc1, 2.16.14rc1
   - id: CVE-2024-11079
     paths:
-      - "sources/ansible-06/files/requirements.txt"
-      - "sources/ansible-07/files/requirements.txt"
-      - "sources/ansible-08/files/requirements.txt"
+      - "sources/ansible-06/requirements.txt"
+      - "sources/ansible-07/requirements.txt"
+      - "sources/ansible-08/requirements.txt"
   # (medium) fixed in ansible 12.2.0
   - id: CVE-2025-14010
     paths:
-      - "sources/ansible-06/files/requirements.txt"
-      - "sources/ansible-07/files/requirements.txt"
-      - "sources/ansible-08/files/requirements.txt"
-      - "sources/ansible-09/files/requirements.txt"
-      - "sources/ansible-10/files/requirements.txt"
-      - "sources/ansible-11/files/requirements.txt"
+      - "sources/ansible-06/requirements.txt"
+      - "sources/ansible-07/requirements.txt"
+      - "sources/ansible-08/requirements.txt"
+      - "sources/ansible-09/requirements.txt"
+      - "sources/ansible-10/requirements.txt"
+      - "sources/ansible-11/requirements.txt"
   # (high) fixed in ansible 2.16.19rc1
   - id: CVE-2026-11332
     paths:
-      - "sources/ansible-06/files/requirements.txt"
-      - "sources/ansible-07/files/requirements.txt"
-      - "sources/ansible-08/files/requirements.txt"
-      - "sources/ansible-10/files/requirements.txt"
+      - "sources/ansible-06/requirements.txt"
+      - "sources/ansible-07/requirements.txt"
+      - "sources/ansible-08/requirements.txt"
+      - "sources/ansible-10/requirements.txt"
 misconfigurations:
   - id: AVD-DS-0001
   - id: AVD-DS-0002

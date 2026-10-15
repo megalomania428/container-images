@@ -1,5 +1,21 @@
 #!/usr/bin/env bash
 set -ueo pipefail
+# shellcheck disable=1091
+source /etc/os-release
+case "${ID}" in
+ubuntu)
+  docker_repo='https://download.docker.com/linux/ubuntu'
+  docker_units=(systemd-resolved docker)
+  ;;
+debian)
+  docker_repo='https://download.docker.com/linux/debian'
+  docker_units=(docker)
+  ;;
+*)
+  echo "unsupported distribution [${ID}]" >&2
+  exit 66
+  ;;
+esac
 
 # generic packages
 apt-get update
@@ -10,13 +26,11 @@ apt-get install -y --no-install-recommends systemd iproute2 python3-apt aptitude
 
 # https://docs.docker.com/engine/install/ubuntu/#install-using-the-repository
 install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+curl -fsSL "${docker_repo}/gpg" -o /etc/apt/keyrings/docker.asc
 chmod a+r /etc/apt/keyrings/docker.asc
-# shellcheck disable=1091
 echo \
   "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
-  https://download.docker.com/linux/ubuntu \
-  $(source /etc/os-release && echo "$VERSION_CODENAME") stable" |
+  ${docker_repo} ${VERSION_CODENAME} stable" |
   tee /etc/apt/sources.list.d/docker.list >/dev/null
 apt-get update
 apt-get install -y --no-install-recommends docker-ce docker-ce-cli containerd.io \
@@ -24,7 +38,7 @@ apt-get install -y --no-install-recommends docker-ce docker-ce-cli containerd.io
 
 # image configuration
 update-ca-certificates
-systemctl enable systemd-resolved docker
+systemctl enable "${docker_units[@]}"
 systemctl disable systemd-networkd ssh
 
 # docker 29 update working in podman

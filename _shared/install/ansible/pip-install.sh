@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -ueo pipefail
-env_dir="${PYENV_ROOT}/versions/${PYTHON_VERSION}"
+env_dir="${PYENV_ROOT}/versions/${PYENV_VERSION_PYTHON}"
 cd "${env_dir}"
 bin/python -m pip install --upgrade pip
 bin/python -m pip install -r /files/requirements.txt
 
 # Source common functions
 # shellcheck disable=SC1091
-source /files/shared/install/ansible/common.sh
+source /files/common.sh
 
 # Extract ansible version from TAG
 ANSIBLE_VERSION="${TAG#ansible-}"
