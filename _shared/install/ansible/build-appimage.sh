@@ -97,6 +97,7 @@ ansible-*)
     "$APPDIR" "${PATCH_DIR}/flush-line.patch" "${ANSIBLE_VERSION}"
   apply_async_check_patch \
     "$APPDIR" "${PATCH_DIR}/async-check.patch" "${ANSIBLE_VERSION}"
+  apply_recipe_patches "$APPDIR" "/workspace/sources/${TAG}/patches"
   cd "$APPDIR"
   # shellcheck disable=2016
   _DEFAULT_BIN='${HERE}/bin/python'

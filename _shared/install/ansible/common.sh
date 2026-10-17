@@ -38,6 +38,21 @@ apply_flush_line_patch() {
   fi
 }
 
+apply_recipe_patches() {
+  local python_root="$1"
+  local patch_dir="$2"
+  local site_packages
+  local patch_file
+  site_packages="$(echo "${python_root}"/lib/python*/site-packages)"
+  # recipe patches keep upstream lib/ansible/ paths, pip installs them without lib/
+  for patch_file in "${patch_dir}/"*.patch; do
+    [[ -f "${patch_file}" ]] || continue
+    echo "Applying ${patch_file}…"
+    sed -E '/^(---|\+\+\+) [ab]\/lib\/ansible\//s@/lib/ansible/@/ansible/@' \
+      "${patch_file}" | patch --batch --forward --fuzz=0 -d "${site_packages}" -p1
+  done
+}
+
 copy_system_libs() {
   local appdir="$1"
   shift
