@@ -18,3 +18,4 @@ cleanup_python_packages "${env_dir}"
 # Apply patches
 apply_flush_line_patch "${env_dir}" "/files/flush-line.patch" "${ANSIBLE_VERSION}"
 apply_async_check_patch "${env_dir}" "/files/async-check.patch" "${ANSIBLE_VERSION}"
+apply_recipe_patches "${env_dir}" '/files/patches'

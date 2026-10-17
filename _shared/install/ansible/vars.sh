@@ -14,6 +14,9 @@ set -ueo pipefail
   IMAGE_TARGET='ansible'
   EXTRA_IMAGES=("docker-${TAG}:docker:../../_shared/test/systemd/test.sh")
 }
+if [[ -d "sources/${TAG}/patches" ]]; then
+  SHARED_ASSETS+=("sources/${TAG}/patches/:_shared/patches")
+fi
 BASE_IMAGE="${ANSIBLE_BASE_IMAGE}"
 if [[ -z "${APPIMAGE_TARGET:-}" ]]; then
   # the podman repository has no packages for the AppImage Ubuntu release
