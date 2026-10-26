@@ -40,5 +40,5 @@ podman login --username json_key --password-stdin ghcr.io
 
   ```bash
   git checkout master && git pull
-  git tag -fm $(git branch --sho) 009 && git push origin --force $(git describe)
+  git tag -fm $(git branch --sho) 010 && git push origin --force $(git describe)
   ```
