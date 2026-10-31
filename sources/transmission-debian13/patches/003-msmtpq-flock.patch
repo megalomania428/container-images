@@ -1,0 +1,50 @@
+diff -ruN -x .git a/msmtp/scripts/msmtpq/msmtpq b/msmtp/scripts/msmtpq/msmtpq
+--- a/msmtp/scripts/msmtpq/msmtpq	2024-10-17 18:58:00.000000000 +0000
++++ b/msmtp/scripts/msmtpq/msmtpq	2026-10-31 12:06:23.214169757 +0000
+@@ -232,31 +232,22 @@
+ ## write/remove queue lockfile for a queue op
+ ##
+ lock_queue() {        # <-- '-u' to remove lockfile
+-  local LOK="${MSMTPQ_Q}/.lock"      # lock file name
+-  local -i MAX=240 SEC=0             # max seconds to gain a lock ; seconds waiting
+-
+-  if [ -z "$1" ]; then              # lock queue
+-    ## Philipp Hartwig patch #2
+-    'mkdir' "$LOK" 2>/dev/null && LKD='t'
+-    while [ -z "$LKD" ] && [ "$SEC" -lt "$MAX" ]; do # lock file present
+-      sleep 1                                        # wait a second
+-      SEC=$((SEC + 1))                               # accumulate seconds
+-      'mkdir' "$LOK" 2>/dev/null && LKD='t'          # make lockdir ; lock queue ; set flag
+-    done                                             # try again while locked for MAX secs
+-    if [ -z "$LKD" ]; then
+-      # lock file still there, give up
+-      err "cannot use queue $MSMTPQ_Q : waited $MAX seconds for"\
+-          " lockdir [ $LOK ] to vanish ; giving up"\
+-          'if you are certain that no other instance of this script'\
+-          " is running, then 'rmdir' the lock dir manually"
++  local LOK="${MSMTPQ_Q}/.lock"
++  if [[ -z "$1" ]] ; then              # lock queue
++    exec 9> "${LOK}" || {
++      err '' "cannot open queue lock [ $LOK ]" ''
++      exit 1
++    }
++    /usr/bin/env flock -w 222 9 || {
++      exec 9>&-
++      err '' "queue lock wait failed [ $LOK ]" ''
+       exit 1
+-    else
+-      return 0
+-    fi
+-  elif [ "$1" = '-u' ] ; then                   # unlock queue
+-    if [ -d "$LOK" ]; then 'rmdir' "$LOK"; fi   # remove the lock
+-    if [ -n "$LKD" ]; then unset LKD; fi             # unset flag
+-    return 0
++    }
++    LKD='t'
++  elif [[ "$1" = '-u' ]] ; then        # unlock queue
++    /usr/bin/env flock -u 9
++    exec 9>&-
++    unset LKD
+   fi
+ }
+ 
