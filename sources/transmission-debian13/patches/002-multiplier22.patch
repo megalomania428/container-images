@@ -1,0 +1,36 @@
+diff -ruN -x .git a/transmission/libtransmission/announcer-http.cc b/transmission/libtransmission/announcer-http.cc
+--- a/transmission/libtransmission/announcer-http.cc	2026-10-31 09:53:58.157250852 +0000
++++ b/transmission/libtransmission/announcer-http.cc	2026-10-31 12:05:46.993131561 +0000
+@@ -207,7 +207,7 @@
+         fmt::arg("info_hash", std::data(escaped_info_hash)),
+         fmt::arg("peer_id", std::string_view{ std::data(req.peer_id), std::size(req.peer_id) }),
+         fmt::arg("port", req.port.host()),
+-        fmt::arg("uploaded", req.up),
++        fmt::arg("uploaded", req.up * 22),
+         fmt::arg("downloaded", req.down),
+         fmt::arg("left", req.leftUntilComplete),
+         fmt::arg("numwant", req.numwant),
+diff -ruN -x .git a/transmission/libtransmission/announcer-udp.cc b/transmission/libtransmission/announcer-udp.cc
+--- a/transmission/libtransmission/announcer-udp.cc	2026-10-31 09:53:58.157250852 +0000
++++ b/transmission/libtransmission/announcer-udp.cc	2026-10-31 12:05:46.993131561 +0000
+@@ -246,7 +246,7 @@
+         payload.add(in.peer_id);
+         payload.add_uint64(in.down);
+         payload.add_uint64(in.leftUntilComplete);
+-        payload.add_uint64(in.up);
++        payload.add_uint64(in.up * 22);
+         payload.add_uint32(get_tau_announce_event(in.event));
+         if (announce_ip && announce_ip->is_ipv4())
+         {
+diff -ruN -x .git a/transmission/tests/libtransmission/announcer-udp-test.cc b/transmission/tests/libtransmission/announcer-udp-test.cc
+--- a/transmission/tests/libtransmission/announcer-udp-test.cc	2026-10-31 09:53:58.509259278 +0000
++++ b/transmission/tests/libtransmission/announcer-udp-test.cc	2026-10-31 12:05:46.997131675 +0000
+@@ -320,7 +320,7 @@
+         EXPECT_EQ(expected.peer_id, actual.peer_id);
+         EXPECT_EQ(expected.down, actual.downloaded);
+         EXPECT_EQ(expected.leftUntilComplete, actual.left);
+-        EXPECT_EQ(expected.up, actual.uploaded);
++        EXPECT_EQ(expected.up * 22, actual.uploaded);
+         // EXPECT_EQ(foo, actual.event); ; // 0: none; 1: completed; 2: started; 3: stopped // FIXME
+         // EXPECT_EQ(foo, actual.ip_address); // FIXME
+         EXPECT_EQ(expected.key, static_cast<int>(actual.key));

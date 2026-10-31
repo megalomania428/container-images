@@ -1,0 +1,513 @@
+diff -ruN -x .git a/transmission/debian/control b/transmission/debian/control
+--- a/transmission/debian/control	2025-08-23 16:17:20.000000000 +0000
++++ b/transmission/debian/control	2026-10-31 12:05:02.187834776 +0000
+@@ -6,15 +6,10 @@
+            Barak A. Pearlmutter <bap@debian.org>
+ Build-Depends: cmake,
+                debhelper-compat (= 13),
+-               libayatana-appindicator3-dev,
+                libcurl4-openssl-dev | libcurl4-dev | libcurl-dev,
+                libevent-dev,
+-               libgtkmm-4.0-dev (>= 4.11),
+-               libglibmm-2.68-dev,
+-               libwolfssl-dev,
+                libminiupnpc-dev,
+                libnatpmp-dev,
+-               libnotify-dev,
+                libssl-dev,
+                libfast-float-dev,
+                libfmt-dev,
+@@ -24,14 +19,10 @@
+                libpsl-dev,
+                libutfcpp-dev,
+                libsystemd-dev [linux-any],
+-               qt6-base-dev,
+-               qt6-tools-dev,
+-               qt6-tools-dev-tools,
+                rapidjson-dev,
+-               libqt6svg6-dev,
+                zlib1g-dev,
+                esbuild,
+-               node-lodash-packages,
++               node-fast-deep-equal,
+                rsass,
+ Standards-Version: 4.7.0
+ Rules-Requires-Root: no
+@@ -39,20 +30,6 @@
+ Vcs-Git: https://salsa.debian.org/debian/transmission.git
+ Homepage: https://transmissionbt.com/
+ 
+-Package: transmission
+-Architecture: any
+-Pre-Depends: ${misc:Pre-Depends}
+-Depends: transmission-common (>= ${binary:Version}),
+-         transmission-gtk (>= ${binary:Version}) | transmission-qt (>= ${binary:Version}) | transmission-cli (>= ${binary:Version}),
+-         ${misc:Depends}
+-Description: lightweight BitTorrent client
+- Transmission is a set of lightweight BitTorrent clients (in GUI, CLI
+- and daemon form). All its incarnations feature a very simple, intuitive
+- interface on top on an efficient, cross-platform back-end.
+- .
+- This is just a metapackage depending on one of the front-end
+- alternatives
+-
+ Package: transmission-common
+ Architecture: any
+ Pre-Depends: ${misc:Pre-Depends}
+@@ -71,8 +48,7 @@
+ Depends: transmission-common (= ${binary:Version}),
+          ${misc:Depends},
+          ${shlibs:Depends}
+-Suggests: transmission-daemon (= ${binary:Version}),
+-          transmission-gtk (= ${binary:Version})
++Suggests: transmission-daemon (= ${binary:Version})
+ Description: lightweight BitTorrent client (command line programs)
+  Transmission is a set of lightweight BitTorrent clients (in GUI, CLI
+  and daemon form). All its incarnations feature a very simple, intuitive
+@@ -82,34 +58,6 @@
+  transmission-daemon, tools to create/edit/inspect torrent files
+  and a deprecated stand-alone command-line client.
+ 
+-Package: transmission-gtk
+-Architecture: any
+-Pre-Depends: ${misc:Pre-Depends}
+-Depends: transmission-common (= ${binary:Version}),
+-         ${misc:Depends},
+-         ${shlibs:Depends}
+-Recommends: xdg-utils
+-Description: lightweight BitTorrent client (GTK+ interface)
+- Transmission is a set of lightweight BitTorrent clients (in GUI, CLI
+- and daemon form). All its incarnations feature a very simple, intuitive
+- interface on top on an efficient, cross-platform back-end.
+- .
+- This package contains the GTK+ stand-alone client.
+-
+-Package: transmission-qt
+-Architecture: any
+-Pre-Depends: ${misc:Pre-Depends}
+-Depends: transmission-common (= ${binary:Version}),
+-         ${misc:Depends},
+-         ${shlibs:Depends}
+-Recommends: xdg-utils
+-Description: lightweight BitTorrent client (Qt interface)
+- Transmission is a set of lightweight BitTorrent clients (in GUI, CLI
+- and daemon form). All its incarnations feature a very simple, intuitive
+- interface on top on an efficient, cross-platform back-end.
+- .
+- This package contains the Qt stand-alone client.
+-
+ Package: transmission-daemon
+ Architecture: any
+ Pre-Depends: ${misc:Pre-Depends}, adduser
+@@ -129,16 +77,3 @@
+  transmission-cli, or any of the GUI interfaces,
+  transmission-remote-gtk, transgui, or tremotesf, all of which can be
+  used to control and monitor the daemon either locally or remotely.
+-
+-Package: libtransmission-dev
+-Section: libdevel
+-Architecture: any
+-Pre-Depends: ${misc:Pre-Depends}
+-Depends: ${misc:Depends}
+-Description: lightweight BitTorrent client (development library)
+- Transmission is a set of lightweight BitTorrent clients (in GUI, CLI
+- and daemon form). All its incarnations feature a very simple,
+- intuitive interface on top on an efficient, cross-platform back-end.
+- .
+- This package contains the static library and associated #include
+- file.
+diff -ruN -x .git a/transmission/debian/libtransmission-dev.install b/transmission/debian/libtransmission-dev.install
+--- a/transmission/debian/libtransmission-dev.install	2025-01-16 12:48:34.000000000 +0000
++++ b/transmission/debian/libtransmission-dev.install	1970-01-01 00:00:00.000000000 +0000
+@@ -1,2 +0,0 @@
+-usr/lib/*/libtransmission.a
+-usr/include/transmission
+diff -ruN -x .git a/transmission/debian/patches/0003-disable-git-hook-installation.patch b/transmission/debian/patches/0003-disable-git-hook-installation.patch
+--- a/transmission/debian/patches/0003-disable-git-hook-installation.patch	2025-08-20 09:41:32.000000000 +0000
++++ b/transmission/debian/patches/0003-disable-git-hook-installation.patch	2026-10-31 12:04:37.115102620 +0000
+@@ -4,14 +4,10 @@
+ 
+ Forwarded: not-needed
+ ---
+- CMakeLists.txt | 2 +-
+- 1 file changed, 1 insertion(+), 1 deletion(-)
+-
+-diff --git a/CMakeLists.txt b/CMakeLists.txt
+-index 2c1c897..b777b50 100644
+---- a/CMakeLists.txt
+-+++ b/CMakeLists.txt
+-@@ -865,7 +865,7 @@ list(APPEND CPACK_SOURCE_IGNORE_FILES
++diff -ruN a/CMakeLists.txt b/CMakeLists.txt
++--- a/CMakeLists.txt	2026-10-31 09:53:58.000000000 +0000
+++++ b/CMakeLists.txt	2026-10-31 12:04:31.638942059 +0000
++@@ -877,7 +877,7 @@
+  
+  ## Code Formatting
+  
+diff -ruN -x .git a/transmission/debian/patches/0004-do-not-mess-revision.patch b/transmission/debian/patches/0004-do-not-mess-revision.patch
+--- a/transmission/debian/patches/0004-do-not-mess-revision.patch	2025-08-23 16:17:20.000000000 +0000
++++ b/transmission/debian/patches/0004-do-not-mess-revision.patch	2026-10-31 12:04:43.043276169 +0000
+@@ -6,14 +6,10 @@
+ 
+ Forwarded: not-needed
+ ---
+- CMakeLists.txt | 7 -------
+- 1 file changed, 7 deletions(-)
+-
+-diff --git a/CMakeLists.txt b/CMakeLists.txt
+-index b777b50..acf92bc 100644
+---- a/CMakeLists.txt
+-+++ b/CMakeLists.txt
+-@@ -198,13 +198,6 @@ endif()
++diff -ruN a/CMakeLists.txt b/CMakeLists.txt
++--- a/CMakeLists.txt	2026-10-31 12:04:31.638942059 +0000
+++++ b/CMakeLists.txt	2026-10-31 12:04:37.619117385 +0000
++@@ -196,13 +196,6 @@
+  
+  string(STRIP "${TR_VCS_REVISION}" TR_VCS_REVISION)
+  
+diff -ruN -x .git a/transmission/debian/patches/CVE-2026-38978.patch b/transmission/debian/patches/CVE-2026-38978.patch
+--- a/transmission/debian/patches/CVE-2026-38978.patch	2026-08-31 22:05:34.000000000 +0000
++++ b/transmission/debian/patches/CVE-2026-38978.patch	1970-01-01 00:00:00.000000000 +0000
+@@ -1,33 +0,0 @@
+-From e51d77e202206ee1389cbd6d9ab154421942b530 Mon Sep 17 00:00:00 2001
+-From: Charles Kerr <charles@charleskerr.com>
+-Date: Tue, 31 Mar 2026 09:13:32 -0500
+-Subject: [PATCH] fix: add clickjack safeguards when serving http responses
+- (#8747) (#8749)
+-
+---- transmission-4.1.0~beta2+dfsg.orig/libtransmission/rpc-server.cc
+-+++ transmission-4.1.0~beta2+dfsg/libtransmission/rpc-server.cc
+-@@ -175,7 +175,15 @@ namespace
+- {
+- int constexpr DeflateLevel = 6; // medium / default
+- 
+--// ---
+-+// Prevent clickjacking on the browser-facing WebUI and RPC responses.
+-+// https://github.com/transmission/transmission/issues/8726
+-+// https://cheatsheetseries.owasp.org/cheatsheets/Clickjacking_Defense_Cheat_Sheet.html.
+-+void add_clickjacking_prevention_headers(struct evkeyvalq* headers)
+-+{
+-+    // Send X-Frame-Options for older browsers + CSP frame-ancestors for newer ones
+-+    evhttp_add_header(headers, "X-Frame-Options", "SAMEORIGIN");
+-+    evhttp_add_header(headers, "Content-Security-Policy", "frame-ancestors 'self'");
+-+}
+- 
+- void send_simple_response(struct evhttp_request* req, int code, char const* text = nullptr)
+- {
+-@@ -499,6 +507,7 @@ void handle_request(struct evhttp_reques
+- 
+-     auto* const output_headers = evhttp_request_get_output_headers(req);
+-     evhttp_add_header(output_headers, "Server", MY_REALM);
+-+    add_clickjacking_prevention_headers(output_headers);
+- 
+-     if (server->is_anti_brute_force_enabled() && server->login_attempts_ >= server->settings().anti_brute_force_limit)
+-     {
+diff -ruN -x .git a/transmission/debian/patches/fix-fr-crash.patch b/transmission/debian/patches/fix-fr-crash.patch
+--- a/transmission/debian/patches/fix-fr-crash.patch	2025-08-23 16:17:20.000000000 +0000
++++ b/transmission/debian/patches/fix-fr-crash.patch	1970-01-01 00:00:00.000000000 +0000
+@@ -1,15 +0,0 @@
+-From: Alexandre Rossi <niol@zincube.net>
+-Subject: fix GTK app crash when LANG=fr
+-Forwarded: https://github.com/transmission/transmission/pull/7677
+-
+---- transmission.git.orig/po/fr.po	2025-04-15 11:10:55.927954824 +0200
+-+++ transmission.git/po/fr.po	2025-08-19 17:38:58.595224721 +0200
+-@@ -1150,7 +1150,7 @@
+- msgid_plural "{seconds_left:L} seconds left"
+- msgstr[0] "{seconds_left:L} seconde restante"
+- msgstr[1] "{seconds_left:L} secondes restantes"
+--msgstr[2] "Encore {minutes_left:L} minute"
+-+msgstr[2] "Encore {seconds_left:L} secondes"
+- 
+- #: ../gtk/Utils.cc:266
+- msgid "The torrent file '{path}' is already in use by '{torrent_name}'."
+diff -ruN -x .git a/transmission/debian/patches/fix-gtk-progress.patch b/transmission/debian/patches/fix-gtk-progress.patch
+--- a/transmission/debian/patches/fix-gtk-progress.patch	2025-08-20 09:41:32.000000000 +0000
++++ b/transmission/debian/patches/fix-gtk-progress.patch	1970-01-01 00:00:00.000000000 +0000
+@@ -1,28 +0,0 @@
+-From: Alexandre Rossi <alexandre.rossi@gmail.com>
+-Date: Mon, 16 Jun 2025 14:33:18 +0100
+-Subject: unbreak ChangeFlag bitwise operations
+-
+-Forwarded: https://github.com/transmission/transmission/pull/7613
+-
+-Upstream fix: #7572
+-
+-8 bits is not enough to do bitwise comparisons on more than 8 independent
+-values.
+----
+- gtk/Torrent.h | 3 ++-
+- 1 file changed, 2 insertions(+), 1 deletion(-)
+-
+-diff --git a/gtk/Torrent.h b/gtk/Torrent.h
+-index c289e57..c26f0d9 100644
+---- a/gtk/Torrent.h
+-+++ b/gtk/Torrent.h
+-@@ -39,7 +39,8 @@ public:
+-         Gtk::TreeModelColumn<Glib::ustring> name_collated;
+-     };
+- 
+--    enum class ChangeFlag : uint8_t
+-+    // wider type required because of bitwise operations on underlying type
+-+    enum class ChangeFlag : uint32_t
+-     {
+-         ACTIVE_PEER_COUNT,
+-         ACTIVE_PEERS_DOWN,
+diff -ruN -x .git a/transmission/debian/patches/series b/transmission/debian/patches/series
+--- a/transmission/debian/patches/series	2026-08-31 22:05:34.000000000 +0000
++++ b/transmission/debian/patches/series	2026-10-31 12:04:50.839503988 +0000
+@@ -1,8 +1,5 @@
+-fix-fr-crash.patch
+-fix-gtk-progress.patch
+ use-system-libs.patch
+ systemd_service_fixes.patch
+ web-easier-build.patch
+ 0003-disable-git-hook-installation.patch
+ 0004-do-not-mess-revision.patch
+-CVE-2026-38978.patch
+diff -ruN -x .git a/transmission/debian/patches/systemd_service_fixes.patch b/transmission/debian/patches/systemd_service_fixes.patch
+--- a/transmission/debian/patches/systemd_service_fixes.patch	2025-08-20 09:41:32.000000000 +0000
++++ b/transmission/debian/patches/systemd_service_fixes.patch	2026-10-31 12:04:21.714650469 +0000
+@@ -15,19 +15,15 @@
+ Forwarded: not-needed
+ Last-Update: 2014-10-16
+ ---
+- daemon/transmission-daemon.service | 2 +-
+- 1 file changed, 1 insertion(+), 1 deletion(-)
+-
+-diff --git a/daemon/transmission-daemon.service b/daemon/transmission-daemon.service
+-index 63ca0b1..f33fad2 100644
+---- a/daemon/transmission-daemon.service
+-+++ b/daemon/transmission-daemon.service
+-@@ -5,7 +5,7 @@ After=network-online.target
+- Documentation=man:transmission-daemon(1)
++diff -ruN a/daemon/transmission-daemon.service.in b/daemon/transmission-daemon.service.in
++--- a/daemon/transmission-daemon.service.in	2026-10-31 09:53:58.000000000 +0000
+++++ b/daemon/transmission-daemon.service.in	2026-10-31 12:04:17.978540492 +0000
++@@ -5,7 +5,7 @@
++ Documentation=man:@TR_NAME@-daemon(1)
+  
+  [Service]
+ -User=transmission
+ +User=debian-transmission
+- Type=notify
+- ExecStart=/usr/bin/transmission-daemon -f --log-level=error
+- ExecReload=/bin/kill -s HUP $MAINPID
++ Type=notify-reload
++ ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/@TR_NAME@-daemon -f --log-level=error
++ 
+diff -ruN -x .git a/transmission/debian/patches/use-system-libs.patch b/transmission/debian/patches/use-system-libs.patch
+--- a/transmission/debian/patches/use-system-libs.patch	2025-08-20 09:41:32.000000000 +0000
++++ b/transmission/debian/patches/use-system-libs.patch	2026-10-31 12:04:02.942096707 +0000
+@@ -4,41 +4,30 @@
+ 
+ Forwarded: https://github.com/transmission/transmission/pull/6900
+ ---
+- cmake/FindFastFloat.cmake  | 2 +-
+- cmake/FindFmt.cmake        | 2 +-
+- cmake/FindRapidJSON.cmake  | 2 +-
+- cmake/FindUtfCpp.cmake     | 2 +-
+- tests/gtest/CMakeLists.txt | 8 ++++----
+- 5 files changed, 8 insertions(+), 8 deletions(-)
+-
+-diff --git a/cmake/FindFastFloat.cmake b/cmake/FindFastFloat.cmake
+-index a3cea4a..30f87b9 100644
+---- a/cmake/FindFastFloat.cmake
+-+++ b/cmake/FindFastFloat.cmake
+-@@ -2,4 +2,4 @@ add_library(FastFloat::fast_float INTERFACE IMPORTED)
++diff -ruN a/cmake/FindFastFloat.cmake b/cmake/FindFastFloat.cmake
++--- a/cmake/FindFastFloat.cmake	2026-10-31 09:53:58.000000000 +0000
+++++ b/cmake/FindFastFloat.cmake	2026-10-31 12:03:52.397784371 +0000
++@@ -2,4 +2,4 @@
+  
+  target_include_directories(FastFloat::fast_float
+      INTERFACE
+ -        ${TR_THIRD_PARTY_SOURCE_DIR}/fast_float/include)
+ +        /usr/include/fast_float/)
+-diff --git a/cmake/FindFmt.cmake b/cmake/FindFmt.cmake
+-index 829f607..dcf91ca 100644
+---- a/cmake/FindFmt.cmake
+-+++ b/cmake/FindFmt.cmake
+-@@ -2,7 +2,7 @@ add_library(fmt::fmt-header-only INTERFACE IMPORTED)
++diff -ruN a/cmake/FindFmt.cmake b/cmake/FindFmt.cmake
++--- a/cmake/FindFmt.cmake	2026-10-31 09:53:58.000000000 +0000
+++++ b/cmake/FindFmt.cmake	2026-10-31 12:03:57.753943145 +0000
++@@ -1,6 +1,6 @@
++ add_library(fmt::fmt-header-only INTERFACE IMPORTED)
+  
+- target_include_directories(fmt::fmt-header-only
+-     INTERFACE
+--        ${TR_THIRD_PARTY_SOURCE_DIR}/fmt/include)
+-+        /usr/include/fmt)
++-set(${CMAKE_FIND_PACKAGE_NAME}_INCLUDE "${TR_THIRD_PARTY_SOURCE_DIR}/fmt/include")
+++set(${CMAKE_FIND_PACKAGE_NAME}_INCLUDE "/usr/include")
+  
+- target_compile_definitions(fmt::fmt-header-only
++ target_include_directories(fmt::fmt-header-only
+      INTERFACE
+-diff --git a/cmake/FindRapidJSON.cmake b/cmake/FindRapidJSON.cmake
+-index aec9374..059c1a9 100644
+---- a/cmake/FindRapidJSON.cmake
+-+++ b/cmake/FindRapidJSON.cmake
+-@@ -2,7 +2,7 @@ add_library(RapidJSON INTERFACE IMPORTED)
++diff -ruN a/cmake/FindRapidJSON.cmake b/cmake/FindRapidJSON.cmake
++--- a/cmake/FindRapidJSON.cmake	2026-10-31 09:53:58.000000000 +0000
+++++ b/cmake/FindRapidJSON.cmake	2026-10-31 12:03:52.401784490 +0000
++@@ -2,7 +2,7 @@
+  
+  target_include_directories(RapidJSON
+      INTERFACE
+@@ -47,21 +36,19 @@
+  
+  target_compile_definitions(RapidJSON
+      INTERFACE
+-diff --git a/cmake/FindUtfCpp.cmake b/cmake/FindUtfCpp.cmake
+-index f79085a..1c94813 100644
+---- a/cmake/FindUtfCpp.cmake
+-+++ b/cmake/FindUtfCpp.cmake
+-@@ -2,4 +2,4 @@ add_library(utf8::cpp INTERFACE IMPORTED)
++diff -ruN a/cmake/FindUtfCpp.cmake b/cmake/FindUtfCpp.cmake
++--- a/cmake/FindUtfCpp.cmake	2026-10-31 09:53:58.000000000 +0000
+++++ b/cmake/FindUtfCpp.cmake	2026-10-31 12:03:52.401784490 +0000
++@@ -2,4 +2,4 @@
+  
+  target_include_directories(utf8::cpp
+      INTERFACE
+ -        ${TR_THIRD_PARTY_SOURCE_DIR}/utfcpp/source)
+ +        /usr/include/utf8cpp)
+-diff --git a/tests/gtest/CMakeLists.txt b/tests/gtest/CMakeLists.txt
+-index 77eef53..6da575b 100644
+---- a/tests/gtest/CMakeLists.txt
+-+++ b/tests/gtest/CMakeLists.txt
+-@@ -12,8 +12,8 @@ endif()
++diff -ruN a/tests/gtest/CMakeLists.txt b/tests/gtest/CMakeLists.txt
++--- a/tests/gtest/CMakeLists.txt	2026-10-31 09:53:58.000000000 +0000
+++++ b/tests/gtest/CMakeLists.txt	2026-10-31 12:03:52.405784609 +0000
++@@ -12,8 +12,8 @@
+  
+  target_sources(gtestall
+      PRIVATE
+@@ -72,7 +59,7 @@
+  
+  set_property(
+      TARGET gtestall
+-@@ -21,6 +21,6 @@ set_property(
++@@ -21,6 +21,6 @@
+  
+  target_include_directories(gtestall SYSTEM
+      PRIVATE
+diff -ruN -x .git a/transmission/debian/patches/web-easier-build.patch b/transmission/debian/patches/web-easier-build.patch
+--- a/transmission/debian/patches/web-easier-build.patch	2025-08-20 09:41:32.000000000 +0000
++++ b/transmission/debian/patches/web-easier-build.patch	2026-10-31 12:04:31.118926800 +0000
+@@ -6,14 +6,10 @@
+ 
+    - pack precompiled css instead of relying on sass compiler API
+ ---
+- web/src/main.js | 2 +-
+- 1 file changed, 1 insertion(+), 1 deletion(-)
+-
+-diff --git a/web/src/main.js b/web/src/main.js
+-index b2722ae..481ba13 100644
+---- a/web/src/main.js
+-+++ b/web/src/main.js
+-@@ -9,7 +9,7 @@ import { Prefs } from './prefs.js';
++diff -ruN a/web/src/main.js b/web/src/main.js
++--- a/web/src/main.js	2026-10-31 09:53:58.000000000 +0000
+++++ b/web/src/main.js	2026-10-31 12:04:26.758798773 +0000
++@@ -9,7 +9,7 @@
+  import { Transmission } from './transmission.js';
+  import { debounce } from './utils.js';
+  
+diff -ruN -x .git a/transmission/debian/rules b/transmission/debian/rules
+--- a/transmission/debian/rules	2025-04-15 20:37:59.000000000 +0000
++++ b/transmission/debian/rules	2026-10-31 12:05:13.428161464 +0000
+@@ -12,10 +12,10 @@
+ #      force enable of deprecations (e.g. GTK)
+ override_dh_auto_configure:
+ 	dh_auto_configure --				\
+-		-DINSTALL_LIB=ON			\
++		-DINSTALL_LIB=OFF			\
+ 		-DENABLE_CLI=ON				\
+-		-DENABLE_GTK=ON				\
+-		-DENABLE_QT=ON				\
++		-DENABLE_GTK=OFF			\
++		-DENABLE_QT=OFF				\
+ 		-DUSE_QT_VERSION=$(QT_SELECT)		\
+ 		-DENABLE_DEPRECATED=ON \
+ 		-DCMAKE_BUILD_TYPE=RelWithDebInfo
+@@ -29,7 +29,7 @@
+ 
+ webui: web/assets/css/transmission-app.css $(WEBUI_SOURCES)
+ 	mkdir -p web/node_modules
+-	ln -sf /usr/share/nodejs/lodash.isequal web/node_modules/
++	ln -sf /usr/share/nodejs/fast-deep-equal web/node_modules/
+ 	cd web && esbuild \
+ 		--allow-overwrite \
+ 		--bundle \
+@@ -43,9 +43,6 @@
+ 
+ execute_before_dh_auto_build: webui
+ 
+-override_dh_auto_test:
+-	@echo "skipping auto test"
+-
+ execute_after_dh_auto_install:
+ 	@echo "remove extra license file"
+ 	-rm --verbose debian/tmp/usr/share/doc/transmission/COPYING
+diff -ruN -x .git a/transmission/debian/transmission-common.install b/transmission/debian/transmission-common.install
+--- a/transmission/debian/transmission-common.install	2025-01-16 12:48:34.000000000 +0000
++++ b/transmission/debian/transmission-common.install	2026-10-31 12:05:20.604369547 +0000
+@@ -1,3 +1,2 @@
+ usr/share/doc/transmission/* usr/share/doc/transmission-common/
+-usr/share/icons
+ usr/share/transmission/public_html
+diff -ruN -x .git a/transmission/debian/transmission-gtk.install b/transmission/debian/transmission-gtk.install
+--- a/transmission/debian/transmission-gtk.install	2025-01-16 12:48:34.000000000 +0000
++++ b/transmission/debian/transmission-gtk.install	1970-01-01 00:00:00.000000000 +0000
+@@ -1,4 +0,0 @@
+-usr/bin/transmission-gtk
+-usr/share/applications/transmission-gtk.desktop
+-usr/share/locale
+-usr/share/metainfo
+diff -ruN -x .git a/transmission/debian/transmission-gtk.lintian-overrides b/transmission/debian/transmission-gtk.lintian-overrides
+--- a/transmission/debian/transmission-gtk.lintian-overrides	2025-01-16 12:48:34.000000000 +0000
++++ b/transmission/debian/transmission-gtk.lintian-overrides	1970-01-01 00:00:00.000000000 +0000
+@@ -1,3 +0,0 @@
+-# Folx is a Mac bittorrent client
+-transmission-gtk binary: spelling-error-in-binary Folx *
+-transmission-gtk binary: spelling-in-override-comment * Folx *
+diff -ruN -x .git a/transmission/debian/transmission-gtk.manpages b/transmission/debian/transmission-gtk.manpages
+--- a/transmission/debian/transmission-gtk.manpages	2025-01-16 12:48:34.000000000 +0000
++++ b/transmission/debian/transmission-gtk.manpages	1970-01-01 00:00:00.000000000 +0000
+@@ -1 +0,0 @@
+-usr/share/man/man1/transmission-gtk.1
+diff -ruN -x .git a/transmission/debian/transmission-gtk.mime b/transmission/debian/transmission-gtk.mime
+--- a/transmission/debian/transmission-gtk.mime	2025-01-16 12:48:34.000000000 +0000
++++ b/transmission/debian/transmission-gtk.mime	1970-01-01 00:00:00.000000000 +0000
+@@ -1 +0,0 @@
+-application/x-bittorrent; transmission-gtk %s; description="GTK-based BitTorrent client"; test=test -n "$DISPLAY"
+diff -ruN -x .git a/transmission/debian/transmission-qt.install b/transmission/debian/transmission-qt.install
+--- a/transmission/debian/transmission-qt.install	2025-01-16 12:48:34.000000000 +0000
++++ b/transmission/debian/transmission-qt.install	1970-01-01 00:00:00.000000000 +0000
+@@ -1,3 +0,0 @@
+-usr/bin/transmission-qt
+-usr/share/applications/transmission-qt.desktop
+-usr/share/transmission/translations/*.qm
+diff -ruN -x .git a/transmission/debian/transmission-qt.lintian-overrides b/transmission/debian/transmission-qt.lintian-overrides
+--- a/transmission/debian/transmission-qt.lintian-overrides	2025-01-16 12:48:34.000000000 +0000
++++ b/transmission/debian/transmission-qt.lintian-overrides	1970-01-01 00:00:00.000000000 +0000
+@@ -1,3 +0,0 @@
+-# Folx is a Mac bittorrent client
+-transmission-qt binary: spelling-error-in-binary Folx *
+-transmission-qt binary: spelling-in-override-comment * Folx *
+diff -ruN -x .git a/transmission/debian/transmission-qt.manpages b/transmission/debian/transmission-qt.manpages
+--- a/transmission/debian/transmission-qt.manpages	2025-01-16 12:48:34.000000000 +0000
++++ b/transmission/debian/transmission-qt.manpages	1970-01-01 00:00:00.000000000 +0000
+@@ -1 +0,0 @@
+-usr/share/man/man1/transmission-qt.1
+diff -ruN -x .git a/transmission/debian/transmission-qt.mime b/transmission/debian/transmission-qt.mime
+--- a/transmission/debian/transmission-qt.mime	2025-01-16 12:48:34.000000000 +0000
++++ b/transmission/debian/transmission-qt.mime	1970-01-01 00:00:00.000000000 +0000
+@@ -1 +0,0 @@
+-application/x-bittorrent; transmission-qt %s; description="Qt-based BitTorrent client"; test=test -n "$DISPLAY"

@@ -1,0 +1,5 @@
+# cspell:ignore msmtpq
+set sendmail = /usr/bin/msmtpq
+set sendmail_wait = -1
+set copy = no
+unset record
