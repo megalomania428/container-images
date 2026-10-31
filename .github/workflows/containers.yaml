@@ -78,6 +78,8 @@ jobs:
       - uses: actions/checkout@v5
       - name: run define-matrix tests
         run: _shared/test/jobs/github-matrix.sh
+      - name: run checkout_upstream tests
+        run: _shared/test/jobs/checkout-upstream.sh
   MegaLinter:
     name: MegaLinter
     timeout-minutes: 11

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cspell:ignore gpath nullglob
+# cspell:ignore gpath nullglob toplevel
 set -ueo pipefail
 # shellcheck disable=2034
 PYENV_VERSION_PYTHON="${BUILD_PYENV_VERSION_PYTHON:-3.11.17}"
@@ -9,10 +9,50 @@ PYENV_ROOT='/pye'
 ANSIBLE_BASE_IMAGE='mirror.gcr.io/ubuntu:24.04'
 # shellcheck disable=2034
 APPIMAGE_BASE_IMAGE='mirror.gcr.io/ubuntu:18.04'
+# Directories of this file as sourced and as resolved, fixed when it is sourced, since
+# the caller may change the current directory before calling checkout_upstream.
+CHECKOUT_UPSTREAM_BASES=(
+  "$(CDPATH='' cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -L)"
+  "$(dirname "$(/usr/bin/env realpath -- "${BASH_SOURCE[0]}")")"
+)
 # Usage: checkout_upstream <repo_url> <repo_tag> <upstream_dir>
+# <upstream_dir> is reused only as the top level of its own clone with HEAD at a commit
+# and no *.lock file left in its git directories. Anything else, like a clone interrupted
+# before its .git appeared, before HEAD was written or with its locks left behind, is
+# removed and cloned again, since git would find the enclosing repository there and
+# reset and clean it instead, or keep failing on the leftovers at every run. A path that
+# holds the current directory or this file, or any directory on the way to them through
+# symlinks, is refused at once, since it holds the project that calls this function.
 checkout_upstream() {
-  local _repo_url="$1" _repo_tag="$2" _upstream="$3"
-  if /usr/bin/env git -C "${_upstream}" rev-parse --git-dir >/dev/null 2>&1; then
+  local _repo_url="$1" _repo_tag="$2" _upstream="$3" _top='' _dir='' _git_dir=''
+  local _common='' _lock='' _path='' _base='' _chain='' _real=''
+  _path="$(/usr/bin/env realpath -m -- "${_upstream}")"
+  for _base in . "${CHECKOUT_UPSTREAM_BASES[@]}"; do
+    _chain="$(CDPATH='' cd -- "${_base}" 2>/dev/null && pwd -L)" || _chain=''
+    while [[ -n "${_chain}" ]]; do
+      _real="$(/usr/bin/env realpath -m -- "${_chain}")"
+      [[ "${_real}/" != "${_path%/}/"* ]] || {
+        echo "checkout_upstream: ${_upstream} holds ${_chain}, refusing" >&2
+        return 66
+      }
+      _chain="${_chain%/*}"
+    done
+  done
+  if [[ -e "${_upstream}/.git" ]] &&
+    /usr/bin/env git -C "${_upstream}" rev-parse -q --verify 'HEAD^{commit}' \
+      >/dev/null 2>&1; then
+    _top="$(/usr/bin/env git -C "${_upstream}" rev-parse --show-toplevel 2>/dev/null)" ||
+      _top=''
+    _dir="$(CDPATH='' cd -- "${_upstream}" && pwd -P)" || _dir=''
+    _git_dir="$(/usr/bin/env git -C "${_upstream}" rev-parse --absolute-git-dir \
+      2>/dev/null)" || _git_dir=''
+    _common="$(/usr/bin/env git -C "${_upstream}" rev-parse --path-format=absolute \
+      --git-common-dir 2>/dev/null)" || _common=''
+    _lock="$(/usr/bin/env find "${_git_dir}" "${_common}" -name '*.lock' -print -quit \
+      2>/dev/null)" || _lock='unreadable'
+  fi
+  if [[ -n "${_top}" && "${_top}" == "${_dir}" && -n "${_git_dir}" &&
+    -z "${_lock}" ]]; then
     /usr/bin/env git -C "${_upstream}" reset --hard HEAD
     /usr/bin/env git -C "${_upstream}" clean -fd
     /usr/bin/env git -C "${_upstream}" fetch --tags
