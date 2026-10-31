@@ -1,0 +1,8 @@
+{
+  "Globs": [
+    "**/.git/**",
+    "**/bin/**",
+    "**/sources/transmission-debian13/vars.sh",
+    "**/sources/transmission-debian13/files/settings.json"
+  ]
+}
