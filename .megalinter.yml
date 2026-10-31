@@ -20,12 +20,9 @@ SPELL_CSPELL_PRE_COMMANDS:
       npm install --prefix /node-deps @cspell/dict-ru_ru @cspell/dict-software-terms
     cwd: root
 SPELL_CSPELL_FILTER_REGEX_EXCLUDE: ".+\\.patch|sources/obsidian/files/conf/.*"
-EDITORCONFIG_EDITORCONFIG_CHECKER_FILTER_REGEX_EXCLUDE: "\
-  sources/obsidian/files/conf/.*"
-JAVASCRIPT_STANDARD_FILTER_REGEX_EXCLUDE: "\
-  sources/librechat/files/entrypoint\\.js"
-CSS_STYLELINT_FILTER_REGEX_EXCLUDE: "\
-  sources/obsidian/files/conf/.*"
+EDITORCONFIG_EDITORCONFIG_CHECKER_FILTER_REGEX_EXCLUDE: "sources/obsidian/files/conf/.*"
+JAVASCRIPT_STANDARD_FILTER_REGEX_EXCLUDE: "sources/librechat/files/entrypoint\\.js"
+CSS_STYLELINT_FILTER_REGEX_EXCLUDE: "sources/obsidian/files/conf/.*"
 EDITORCONFIG_EDITORCONFIG_CHECKER_PRE_COMMANDS:
   - command: |
       cat <<EOF > /ec-custom.sh
