@@ -24,12 +24,13 @@ EnvironmentFile=/etc/default/transmission
 ContainerName=transmission
 HostName=transmission
 RunInit=true
+# Network=host of thru publish ports:
 PublishPort=9091:9091
 PublishPort=11000-11110:11000-11110/tcp
 PublishPort=11000-11110:11000-11110/udp
 Volume=/home/torrent/.config/transmission:/etc/transmission-daemon
 Volume=/home/lib/t:/home/lib/t
-Volume=transmission-msmtpq:/var/spool/msmtpq
+Volume=transmission-msmtpq:/var/spool/msmtpq:U
 PodmanArgs=--cidfile=%t/user/921/%N.cid --runtime runc
 UserNS=keep-id
 
