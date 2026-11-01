@@ -12,18 +12,18 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  define-matrix:
+  matrix:
     name: define matrix
     runs-on: ubuntu-24.04
     outputs:
-      matrix: ${{ steps.define-matrix.outputs.matrix }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           submodules: true
       - name: define matrix
-        id: define-matrix
+        id: matrix
         env:
           GITHUB_EVENT_BEFORE: ${{ github.event.before }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -32,11 +32,11 @@ jobs:
           echo "matrix=${PKG_MATRIX}" >> "${GITHUB_OUTPUT}"
   containers:
     name: "${{ matrix.kind }} ${{ matrix.tag }}"
-    needs: define-matrix
-    if: needs.define-matrix.outputs.matrix != '{"include":[]}'
+    needs: matrix
+    if: needs.matrix.outputs.matrix != '{"include":[]}'
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.define-matrix.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.matrix.outputs.matrix) }}
     timeout-minutes: 22
     runs-on: ubuntu-24.04
     permissions:
@@ -99,13 +99,10 @@ jobs:
       - containers
       - matrix-tests
       - MegaLinter
-    if: github.event_name == 'pull_request'
-    permissions:
-      checks: read
+    if: ${{ always() && github.event_name == 'pull_request' }}
     steps:
-      - name: waiting for checks success
-        uses: poseidon/wait-for-status-checks@v0.6.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          ignore: all green, foobar
-          timeout: 111s
+      - name: Check dependencies
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -e 'all(.[]; .result == "success")'
