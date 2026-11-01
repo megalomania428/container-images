@@ -1,4 +1,5 @@
 <!-- cspell:ignore journalctl msmtp msmtpq msmtprc transmail starttls certcheck -->
+<!-- markdownlint-disable MD013 -->
 # Transmission 4.1.4 on Debian 13
 
 `transmission-cli`, `transmission-common` and `transmission-daemon` 4.1.4 together with `msmtp` 1.8.28 are rebuilt in a builder stage from the Debian trixie packaging with the patches from `patches/`; the final `debian:trixie-slim` stage receives only the resulting `.deb` files.
@@ -22,6 +23,7 @@ Image=ghcr.io/megalomania428/transmission-debian13:latest
 EnvironmentFile=/etc/default/transmission
 ContainerName=transmission
 HostName=transmission
+RunInit=true
 PublishPort=9091:9091
 PublishPort=11000-11110:11000-11110/tcp
 PublishPort=11000-11110:11000-11110/udp

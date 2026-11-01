@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # Vibe coding container with systemd and Podman support
 
 The image defaults to the unprivileged `coder` user for interactive commands. The Quadlet overrides that default so systemd runs as PID 1 and UID 0 inside the container; the host Podman service can remain rootless. The inherited Node entrypoint is cleared so Podman recognizes `/sbin/init` and enables its systemd mounts. The init wrapper streams the journal to `podman logs`.

@@ -109,7 +109,7 @@ PATCH="${PWD}/sources/${NAME}/patches/000N-description.patch"
 - Paths inside the patch must be `a/<relative-path>` / `b/<relative-path>` so that `patch -p1` strips exactly one path component and lands in the right place.
 - Test the patched tree after applying all patches to confirm nothing is broken.
 
-# npm sources
+## npm sources
 
 `NPM_PACKAGE` distinguishes an npm source from a container source. npm source `vars.sh` declares `UPSTREAM_URL` and `UPSTREAM_VER` for the pinned checkout, `PATCHSET` as a non-negative patchset number, and `NPM_CHECKS` as the allowed commands run before the one explicit build.
 

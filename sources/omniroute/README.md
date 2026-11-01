@@ -1,5 +1,6 @@
-# OmniRoute container
 <!-- cspell:ignore daystamp earendil subschemas decolua unforwarded -->
+<!-- markdownlint-disable MD013 -->
+# OmniRoute container
 
 Upstream is pinned to `v3.8.1` in `vars.sh`; patches are applied in filename order before the container build.
 
