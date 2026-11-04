@@ -18,3 +18,4 @@ MCP server [jae-jae/searxng-mul-mcp](https://github.com/jae-jae/searxng-mul-mcp)
 - `0001-fix-debug-env-and-verbose-logging.patch` – `DEBUG=true` enables debug logging without changing the entrypoint; SearXNG requests and failed responses are logged in detail.
 - `0002-per-session-mcp-server.patch` – every HTTP session gets its own MCP server instance, so concurrent clients receive only their own responses and closing one session does not affect others; a `DELETE` rejected by the SDK keeps the session. Regression test: `node --test test/http-session.test.mjs` after the build.
 - `0003-limit-searxng-concurrency.patch` – requests of one `search` call run with at most `SEARXNG_CONCURRENCY` in flight; results keep the order of `queries`.
+- `0004-update-node-24.patch` – build and runtime on `node:24-alpine`; `engines` and `@types/node` follow Node 24.
