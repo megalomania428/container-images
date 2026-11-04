@@ -1,0 +1,228 @@
+diff -ruN -x .git a/.env.example b/.env.example
+--- a/.env.example	2026-11-04 08:39:00.871812392 +0000
++++ b/.env.example	2026-11-04 10:34:28.770479764 +0000
+@@ -8,6 +8,9 @@
+ # USERNAME=your_username
+ # PASSWORD=your_password
+ 
++# Optional: Max concurrent SearXNG requests per search call (default: 3)
++# SEARXNG_CONCURRENCY=3
++
+ # Optional: Transport configuration
+ # TRANSPORT=stdio
+ # HOST=0.0.0.0
+diff -ruN -x .git a/README.md b/README.md
+--- a/README.md	2026-11-04 08:39:00.871812392 +0000
++++ b/README.md	2026-11-04 10:34:28.770479764 +0000
+@@ -49,6 +49,9 @@
+ USERNAME=your_username
+ PASSWORD=your_password
+ 
++# Optional: Max concurrent SearXNG requests per search call (default: 3)
++SEARXNG_CONCURRENCY=3
++
+ # Optional: Transport configuration (can also use CLI flags)
+ TRANSPORT=stdio|http
+ HOST=0.0.0.0        # HTTP mode only
+diff -ruN -x .git a/src/config/index.ts b/src/config/index.ts
+--- a/src/config/index.ts	2026-11-04 08:39:00.879812590 +0000
++++ b/src/config/index.ts	2026-11-04 10:34:05.037963769 +0000
+@@ -10,6 +10,7 @@
+       username: string;
+       password: string;
+     };
++    concurrency: number;
+   };
+   transport: {
+     type: "stdio" | "http";
+@@ -82,10 +83,30 @@
+     }
+   }
+ 
++  // Validate SearXNG concurrency: unset or empty means default
++  const concurrencyValue = process.env.SEARXNG_CONCURRENCY;
++  let concurrency = 3;
++  if (concurrencyValue) {
++    concurrency = /^[0-9]+$/.test(concurrencyValue) ? Number(concurrencyValue) : NaN;
++    if (!(concurrency >= 1)) {
++      throw new Error(`
++❌ Invalid SEARXNG_CONCURRENCY configuration!
++
++SEARXNG_CONCURRENCY must be a positive integer (digits only, at least 1).
++Current SEARXNG_CONCURRENCY value: ${concurrencyValue}
++
++Examples:
++  export SEARXNG_CONCURRENCY=3
++  export SEARXNG_CONCURRENCY=5
++`);
++    }
++  }
++
+   return {
+     searxng: {
+       url: searxngUrl,
+       auth,
++      concurrency,
+     },
+     transport: {
+       type: transport,
+diff -ruN -x .git a/src/services/searxng-api.ts b/src/services/searxng-api.ts
+--- a/src/services/searxng-api.ts	2026-11-04 08:39:00.975814966 +0000
++++ b/src/services/searxng-api.ts	2026-11-04 10:34:19.730282903 +0000
+@@ -4,6 +4,7 @@
+  */
+ 
+ import { Logger } from '../utils/logger.js';
++import { Semaphore } from '../utils/semaphore.js';
+ 
+ /**
+  * Valid language codes supported by SearXNG
+@@ -193,17 +194,20 @@
+   private auth?: { username: string; password: string };
+   private timeout: number;
+   private logger?: Logger;
++  private concurrency: number;
+ 
+   constructor(
+     baseUrl: string,
+     auth?: { username: string; password: string },
+     timeout: number = 30000,
+-    logger?: Logger
++    logger?: Logger,
++    concurrency: number = 3
+   ) {
+     this.baseUrl = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
+     this.auth = auth;
+     this.timeout = timeout;
+     this.logger = logger;
++    this.concurrency = concurrency;
+   }
+ 
+   /**
+@@ -320,8 +324,11 @@
+       throw new Error("At least one search query is required");
+     }
+ 
+-    // Create parallel search tasks with error handling
++    // Create parallel search tasks with error handling; the per-call limiter
++    // keeps at most `concurrency` requests to SearXNG in flight
++    const limiter = new Semaphore(this.concurrency);
+     const searchTasks = queries.map(async (query) => {
++      const release = await limiter.acquire();
+       try {
+         const data = await this.searchSingle(query, options);
+         return {
+@@ -337,6 +344,8 @@
+           data: null,
+           error: error instanceof Error ? error.message : "Unknown error",
+         };
++      } finally {
++        release();
+       }
+     });
+ 
+diff -ruN -x .git a/src/tools/searxng.ts b/src/tools/searxng.ts
+--- a/src/tools/searxng.ts	2026-11-04 08:39:00.975814966 +0000
++++ b/src/tools/searxng.ts	2026-11-04 10:34:28.778479939 +0000
+@@ -60,7 +60,8 @@
+       config.searxng.url,
+       config.searxng.auth,
+       30000,
+-      logger
++      logger,
++      config.searxng.concurrency
+     );
+   }
+ 
+diff -ruN -x .git a/src/utils/semaphore.ts b/src/utils/semaphore.ts
+--- a/src/utils/semaphore.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/utils/semaphore.ts	2026-11-04 09:11:06.444894025 +0000
+@@ -0,0 +1,88 @@
++/**
++ * Counting semaphore limiting the number of concurrently running operations
++ * Waiters are served in FIFO order; waiting can be cancelled with AbortSignal
++ */
++
++/**
++ * Releases an acquired slot; calling it more than once has no effect
++ */
++export type Release = () => void;
++
++interface Waiter {
++  resolve: (release: Release) => void;
++  reject: (reason: unknown) => void;
++  signal?: AbortSignal;
++  onAbort?: () => void;
++}
++
++export class Semaphore {
++  private available: number;
++  private waiters: Waiter[] = [];
++
++  constructor(limit: number) {
++    // Huge limits are allowed: they are not exact integers, but behave as unlimited
++    if (!(limit >= 1) || (Number.isFinite(limit) && !Number.isInteger(limit))) {
++      throw new Error(`Semaphore limit must be a positive integer, got: ${limit}`);
++    }
++    this.available = limit;
++  }
++
++  /**
++   * Wait for a free slot. The returned function releases the slot and must be
++   * called exactly when the operation stops occupying it, for example in finally
++   * or before a pause between attempts. If the signal is aborted while waiting,
++   * the waiter leaves the queue and the promise rejects with the signal reason.
++   */
++  acquire(signal?: AbortSignal): Promise<Release> {
++    if (signal?.aborted) {
++      return Promise.reject(signal.reason);
++    }
++    if (this.available > 0) {
++      this.available--;
++      return Promise.resolve(this.createRelease());
++    }
++    return new Promise<Release>((resolve, reject) => {
++      const waiter: Waiter = { resolve, reject, signal };
++      if (signal) {
++        waiter.onAbort = () => {
++          const index = this.waiters.indexOf(waiter);
++          if (index !== -1) {
++            this.waiters.splice(index, 1);
++          }
++          reject(signal.reason);
++        };
++        signal.addEventListener('abort', waiter.onAbort, { once: true });
++      }
++      this.waiters.push(waiter);
++    });
++  }
++
++  /**
++   * Create a one-shot release function for an acquired slot
++   */
++  private createRelease(): Release {
++    let released = false;
++    return () => {
++      if (released) {
++        return;
++      }
++      released = true;
++      this.handOver();
++    };
++  }
++
++  /**
++   * Pass a freed slot to the first waiter or return it to the pool
++   */
++  private handOver(): void {
++    const waiter = this.waiters.shift();
++    if (!waiter) {
++      this.available++;
++      return;
++    }
++    if (waiter.signal && waiter.onAbort) {
++      waiter.signal.removeEventListener('abort', waiter.onAbort);
++    }
++    waiter.resolve(this.createRelease());
++  }
++}

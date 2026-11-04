@@ -1,0 +1,535 @@
+diff -ruN -x .git a/src/index.ts b/src/index.ts
+--- a/src/index.ts	2026-11-04 08:39:00.967814768 +0000
++++ b/src/index.ts	2026-11-04 10:33:20.240997201 +0000
+@@ -87,7 +87,7 @@
+     
+     // Create and start transport
+     const transportFactory = new DefaultTransportFactory(logger);
+-    const transport = transportFactory.create(mcpServer.getServer(), config.transport);
++    const transport = transportFactory.create(() => mcpServer.createServer(), config.transport);
+     
+     // Setup graceful shutdown
+     const shutdown = async () => {
+diff -ruN -x .git a/src/server.ts b/src/server.ts
+--- a/src/server.ts	2026-11-04 08:39:00.967814768 +0000
++++ b/src/server.ts	2026-11-04 08:42:29.280964508 +0000
+@@ -17,16 +17,21 @@
+  * MCP server for SearXNG search functionality
+  */
+ export class SearXNGMCPServer {
+-  private server: Server;
+   private searchTool: SearXNGSearchTool;
+   private logger: Logger;
+ 
+   constructor(config: Config, logger: Logger) {
+     this.logger = logger;
+     this.searchTool = new SearXNGSearchTool(config, logger);
++  }
+ 
+-    // Initialize MCP server
+-    this.server = new Server(
++  /**
++   * Create a new MCP server instance with registered handlers.
++   * Each connection (stdio or HTTP session) must get its own instance,
++   * because the SDK Server keeps per-connection protocol state.
++   */
++  createServer(): Server {
++    const server = new Server(
+       {
+         name: "searxng-mul-mcp",
+         version: "1.0.0",
+@@ -38,15 +43,16 @@
+       }
+     );
+ 
+-    this.setupHandlers();
++    this.setupHandlers(server);
++    return server;
+   }
+ 
+   /**
+    * Setup MCP request handlers
+    */
+-  private setupHandlers(): void {
++  private setupHandlers(server: Server): void {
+     // List available tools
+-    this.server.setRequestHandler(ListToolsRequestSchema, async () => {
++    server.setRequestHandler(ListToolsRequestSchema, async () => {
+       this.logger.debug("Received list_tools request");
+       return {
+         tools: tools,
+@@ -54,7 +60,7 @@
+     });
+ 
+     // Handle tool execution
+-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
++    server.setRequestHandler(CallToolRequestSchema, async (request) => {
+       const { name, arguments: args } = request.params;
+ 
+       this.logger.info(`Executing tool: ${name}`, args);
+@@ -173,11 +179,4 @@
+       return false;
+     }
+   }
+-
+-  /**
+-   * Get the underlying MCP server instance
+-   */
+-  getServer(): Server {
+-    return this.server;
+-  }
+ }
+diff -ruN -x .git a/src/transports/http.ts b/src/transports/http.ts
+--- a/src/transports/http.ts	2026-11-04 08:39:00.879812590 +0000
++++ b/src/transports/http.ts	2026-11-04 09:11:06.436893834 +0000
+@@ -8,25 +8,33 @@
+ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+-import { Transport } from './types.js';
++import { ServerFactory, Transport } from './types.js';
+ import { Logger } from '../utils/logger.js';
+ import { createServer } from 'http';
+ 
+ /**
++ * MCP session: SDK transport and the MCP server dedicated to it
++ */
++interface Session {
++  transport: StreamableHTTPServerTransport;
++  server: Server;
++}
++
++/**
+  * HTTP transport for MCP communication using StreamableHTTPServerTransport
+  */
+ export class HttpTransport implements Transport {
+-  private server: Server;
++  private serverFactory: ServerFactory;
+   private app: express.Application;
+   private httpServer: any;
+   private logger: Logger;
+   private host: string;
+   private port: number;
+   private running: boolean = false;
+-  private transports: { [sessionId: string]: StreamableHTTPServerTransport } = {};
++  private sessions: { [sessionId: string]: Session } = {};
+ 
+-  constructor(server: Server, host: string, port: number, logger: Logger) {
+-    this.server = server;
++  constructor(serverFactory: ServerFactory, host: string, port: number, logger: Logger) {
++    this.serverFactory = serverFactory;
+     this.host = host;
+     this.port = port;
+     this.logger = logger;
+@@ -89,32 +97,37 @@
+         const sessionId = req.headers['mcp-session-id'] as string | undefined;
+         let transport: StreamableHTTPServerTransport;
+ 
+-        if (sessionId && this.transports[sessionId]) {
++        if (sessionId && this.sessions[sessionId]) {
+           // Reuse existing transport
+-          transport = this.transports[sessionId];
++          transport = this.sessions[sessionId].transport;
+           this.logger.debug(`Reusing existing session: ${sessionId}`);
+         } else if (!sessionId && isInitializeRequest(req.body)) {
+           // New initialization request
+           this.logger.info('Creating new MCP session');
+           
++          // Dedicated MCP server: responses and close events of one session
++          // never reach another session
++          const server = this.serverFactory();
+           transport = new StreamableHTTPServerTransport({
+             sessionIdGenerator: () => randomUUID(),
+             onsessioninitialized: (sessionId) => {
+-              this.transports[sessionId] = transport;
++              this.sessions[sessionId] = { transport, server };
+               this.logger.info(`Session initialized: ${sessionId}`);
+             }
+           });
+ 
+-          // Clean up transport when closed
++          // Clean up session when transport is closed. The SDK detaches the
++          // server from the closed transport itself; calling server.close()
++          // here would recurse into transport.close()
+           transport.onclose = () => {
+             if (transport.sessionId) {
+-              delete this.transports[transport.sessionId];
++              delete this.sessions[transport.sessionId];
+               this.logger.info(`Session closed: ${transport.sessionId}`);
+             }
+           };
+ 
+-          // Connect to the MCP server
+-          await this.server.connect(transport);
++          // Connect to the session MCP server
++          await server.connect(transport);
+         } else {
+           // Invalid request
+           this.logger.warn('Invalid MCP request: missing session ID or not initialization');
+@@ -148,13 +161,13 @@
+     this.app.get('/mcp', async (req, res) => {
+       try {
+         const sessionId = req.headers['mcp-session-id'] as string | undefined;
+-        if (!sessionId || !this.transports[sessionId]) {
++        if (!sessionId || !this.sessions[sessionId]) {
+           this.logger.warn(`Invalid session ID for GET request: ${sessionId}`);
+           res.status(400).send('Invalid or missing session ID');
+           return;
+         }
+         
+-        const transport = this.transports[sessionId];
++        const transport = this.sessions[sessionId].transport;
+         await transport.handleRequest(req, res);
+       } catch (error) {
+         this.logger.error('Error handling GET request', error);
+@@ -166,18 +179,20 @@
+     this.app.delete('/mcp', async (req, res) => {
+       try {
+         const sessionId = req.headers['mcp-session-id'] as string | undefined;
+-        if (!sessionId || !this.transports[sessionId]) {
++        if (!sessionId || !this.sessions[sessionId]) {
+           this.logger.warn(`Invalid session ID for DELETE request: ${sessionId}`);
+           res.status(400).send('Invalid or missing session ID');
+           return;
+         }
+         
+-        const transport = this.transports[sessionId];
++        const transport = this.sessions[sessionId].transport;
+         await transport.handleRequest(req, res);
+         
+-        // Clean up the session
+-        delete this.transports[sessionId];
+-        this.logger.info(`Session terminated: ${sessionId}`);
++        // The session is removed by transport.onclose once the SDK has actually
++        // closed it; a DELETE rejected by the SDK keeps the session alive
++        if (!this.sessions[sessionId]) {
++          this.logger.info(`Session terminated: ${sessionId}`);
++        }
+       } catch (error) {
+         this.logger.error('Error handling DELETE request', error);
+         res.status(500).send('Internal server error');
+@@ -230,31 +245,30 @@
+    * Stop HTTP transport
+    */
+   async stop(): Promise<void> {
+-    return new Promise((resolve, reject) => {
+-      if (!this.httpServer) {
+-        resolve();
+-        return;
+-      }
++    if (!this.httpServer) {
++      return;
++    }
+ 
+-      this.logger.info('Stopping HTTP transport...');
+-      
+-      // Close all active MCP sessions first
+-      const sessionIds = Object.keys(this.transports);
+-      this.logger.debug(`Closing ${sessionIds.length} active sessions`);
+-      
+-      for (const sessionId of sessionIds) {
+-        try {
+-          const transport = this.transports[sessionId];
+-          if (transport && typeof transport.close === 'function') {
+-            transport.close();
+-          }
+-          delete this.transports[sessionId];
+-          this.logger.debug(`Session closed: ${sessionId}`);
+-        } catch (error) {
+-          this.logger.warn(`Error closing session ${sessionId}:`, error);
++    this.logger.info('Stopping HTTP transport...');
++
++    // Close all active MCP sessions first
++    const sessionIds = Object.keys(this.sessions);
++    this.logger.debug(`Closing ${sessionIds.length} active sessions`);
++
++    for (const sessionId of sessionIds) {
++      try {
++        const session = this.sessions[sessionId];
++        if (session) {
++          await session.transport.close();
+         }
++        delete this.sessions[sessionId];
++        this.logger.debug(`Session closed: ${sessionId}`);
++      } catch (error) {
++        this.logger.warn(`Error closing session ${sessionId}:`, error);
+       }
+-      
++    }
++
++    return new Promise((resolve, reject) => {
+       // Force close all connections after a short delay
+       const forceCloseTimeout = setTimeout(() => {
+         this.logger.warn('Force closing HTTP server connections');
+diff -ruN -x .git a/src/transports/index.ts b/src/transports/index.ts
+--- a/src/transports/index.ts	2026-11-04 08:39:00.879812590 +0000
++++ b/src/transports/index.ts	2026-11-04 08:42:29.284964607 +0000
+@@ -3,8 +3,7 @@
+  * Supports both stdio and HTTP transport protocols
+  */
+ 
+-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+-import { Transport, TransportConfig, TransportFactory } from './types.js';
++import { ServerFactory, Transport, TransportConfig, TransportFactory } from './types.js';
+ import { StdioTransport } from './stdio.js';
+ import { HttpTransport } from './http.js';
+ import { Logger } from '../utils/logger.js';
+@@ -22,18 +21,18 @@
+   /**
+    * Create transport instance based on configuration
+    */
+-  create(server: Server, config: TransportConfig): Transport {
++  create(serverFactory: ServerFactory, config: TransportConfig): Transport {
+     switch (config.type) {
+       case 'stdio':
+         this.logger.info('Creating stdio transport');
+-        return new StdioTransport(server, this.logger);
++        return new StdioTransport(serverFactory, this.logger);
+ 
+       case 'http':
+         if (!config.host || !config.port) {
+           throw new Error('Host and port are required for HTTP transport');
+         }
+         this.logger.info(`Creating HTTP transport on ${config.host}:${config.port}`);
+-        return new HttpTransport(server, config.host, config.port, this.logger);
++        return new HttpTransport(serverFactory, config.host, config.port, this.logger);
+ 
+       default:
+         throw new Error(`Unsupported transport type: ${config.type}`);
+diff -ruN -x .git a/src/transports/stdio.ts b/src/transports/stdio.ts
+--- a/src/transports/stdio.ts	2026-11-04 08:39:00.879812590 +0000
++++ b/src/transports/stdio.ts	2026-11-04 10:33:20.240997201 +0000
+@@ -5,7 +5,7 @@
+ 
+ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+-import { Transport } from './types.js';
++import { ServerFactory, Transport } from './types.js';
+ import { Logger } from '../utils/logger.js';
+ 
+ /**
+@@ -17,8 +17,8 @@
+   private logger: Logger;
+   private running: boolean = false;
+ 
+-  constructor(server: Server, logger: Logger) {
+-    this.server = server;
++  constructor(serverFactory: ServerFactory, logger: Logger) {
++    this.server = serverFactory();
+     this.logger = logger;
+     this.transport = new StdioServerTransport();
+   }
+diff -ruN -x .git a/src/transports/types.ts b/src/transports/types.ts
+--- a/src/transports/types.ts	2026-11-04 08:39:00.879812590 +0000
++++ b/src/transports/types.ts	2026-11-04 08:42:29.284964607 +0000
+@@ -6,6 +6,11 @@
+ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+ 
+ /**
++ * Factory creating a new MCP server instance for each connection
++ */
++export type ServerFactory = () => Server;
++
++/**
+  * Transport interface for MCP server
+  */
+ export interface Transport {
+@@ -38,5 +43,5 @@
+  * Transport factory interface
+  */
+ export interface TransportFactory {
+-  create(server: Server, config: TransportConfig): Transport;
++  create(serverFactory: ServerFactory, config: TransportConfig): Transport;
+ }
+diff -ruN -x .git a/test/http-session.test.mjs b/test/http-session.test.mjs
+--- a/test/http-session.test.mjs	1970-01-01 00:00:00.000000000 +0000
++++ b/test/http-session.test.mjs	2026-11-04 10:06:41.769986521 +0000
+@@ -0,0 +1,188 @@
++/**
++ * Regression tests for HTTP session termination
++ * Run after the build: node --test test/http-session.test.mjs
++ * MCP_SERVER_ENTRY overrides the server entry point (default: build/index.js)
++ */
++
++import { test, before, after } from 'node:test';
++import assert from 'node:assert/strict';
++import { spawn } from 'node:child_process';
++import { createServer } from 'node:http';
++import { fileURLToPath } from 'node:url';
++
++const entry =
++  process.env.MCP_SERVER_ENTRY || fileURLToPath(new URL('../build/index.js', import.meta.url));
++
++let stub;
++let child;
++let baseUrl;
++
++/**
++ * Listen on a random local port and return it
++ */
++function listen(server) {
++  return new Promise((resolve, reject) => {
++    server.once('error', reject);
++    server.listen(0, '127.0.0.1', () => resolve(server.address().port));
++  });
++}
++
++/**
++ * Find a free local port
++ */
++async function freePort() {
++  const server = createServer();
++  const port = await listen(server);
++  await new Promise((resolve) => server.close(resolve));
++  return port;
++}
++
++/**
++ * Wait until the MCP server answers the health check
++ */
++async function waitForHealth() {
++  const deadline = Date.now() + 10000;
++  while (Date.now() < deadline) {
++    try {
++      const response = await fetch(`${baseUrl}/health`, {
++        signal: AbortSignal.timeout(Math.max(deadline - Date.now(), 1)),
++      });
++      if (response.ok) {
++        return;
++      }
++    } catch {
++      // Server is not listening yet or the request timed out
++    }
++    await new Promise((resolve) => setTimeout(resolve, 100));
++  }
++  throw new Error('MCP server did not become healthy within 10 s');
++}
++
++/**
++ * Send a request to the MCP endpoint and parse JSON or SSE messages
++ */
++async function send(method, sessionId, body, headers = {}) {
++  const response = await fetch(`${baseUrl}/mcp`, {
++    method,
++    headers: {
++      'Content-Type': 'application/json',
++      Accept: 'application/json, text/event-stream',
++      ...(sessionId ? { 'mcp-session-id': sessionId } : {}),
++      ...headers,
++    },
++    body: body === undefined ? undefined : JSON.stringify(body),
++    signal: AbortSignal.timeout(10000),
++  });
++  const text = await response.text();
++  const type = response.headers.get('content-type') || '';
++  let messages = [];
++  if (type.includes('text/event-stream')) {
++    messages = text
++      .split('\n')
++      .filter((line) => line.startsWith('data:'))
++      .map((line) => JSON.parse(line.slice(5)));
++  } else if (type.includes('application/json') && text) {
++    messages = [JSON.parse(text)];
++  }
++  return { status: response.status, headers: response.headers, messages };
++}
++
++/**
++ * Open a new MCP session and return its ID
++ */
++async function openSession() {
++  const init = await send('POST', undefined, {
++    jsonrpc: '2.0',
++    id: 1,
++    method: 'initialize',
++    params: {
++      protocolVersion: '2025-03-26',
++      capabilities: {},
++      clientInfo: { name: 'http-session-test', version: '1.0.0' },
++    },
++  });
++  assert.equal(init.status, 200);
++  const sessionId = init.headers.get('mcp-session-id');
++  assert.ok(sessionId, 'initialize must return mcp-session-id');
++  const initialized = await send('POST', sessionId, {
++    jsonrpc: '2.0',
++    method: 'notifications/initialized',
++  });
++  assert.equal(initialized.status, 202);
++  return sessionId;
++}
++
++/**
++ * Request the tool list in a session
++ */
++function listTools(sessionId, id) {
++  return send('POST', sessionId, { jsonrpc: '2.0', id, method: 'tools/list' });
++}
++
++/**
++ * Assert that the session is alive and answers tools/list
++ */
++async function assertAlive(sessionId, id) {
++  const response = await listTools(sessionId, id);
++  assert.equal(response.status, 200);
++  const message = response.messages.find((m) => m.id === id);
++  assert.ok(message, `tools/list response with id ${id} expected`);
++  assert.deepEqual(
++    message.result.tools.map((tool) => tool.name),
++    ['search']
++  );
++}
++
++before(async () => {
++  stub = createServer((req, res) => {
++    res.writeHead(200, { 'Content-Type': 'application/json' });
++    res.end(req.method === 'HEAD' ? undefined : '{"results":[],"number_of_results":0}');
++  });
++  const stubPort = await listen(stub);
++  const port = await freePort();
++  baseUrl = `http://127.0.0.1:${port}`;
++  child = spawn(
++    process.execPath,
++    [entry, '--transport=http', '--host=127.0.0.1', `--port=${port}`],
++    {
++      env: { ...process.env, SEARXNG_URL: `http://127.0.0.1:${stubPort}` },
++      stdio: 'ignore',
++    }
++  );
++  await waitForHealth();
++});
++
++after(async () => {
++  child?.kill('SIGKILL');
++  await new Promise((resolve) => stub.close(resolve));
++});
++
++test('DELETE rejected by the SDK keeps the session alive', async () => {
++  const sessionId = await openSession();
++  const rejected = await send('DELETE', sessionId, undefined, {
++    'mcp-protocol-version': '1999-01-01',
++  });
++  assert.equal(rejected.status, 400);
++  await assertAlive(sessionId, 2);
++  const deleted = await send('DELETE', sessionId, undefined);
++  assert.equal(deleted.status, 200);
++  const afterDelete = await listTools(sessionId, 3);
++  assert.equal(afterDelete.status, 400);
++});
++
++test('DELETE closes only its own session', async () => {
++  const kept = await openSession();
++  const closed = await openSession();
++  const deleted = await send('DELETE', closed, undefined);
++  assert.equal(deleted.status, 200);
++  const afterDelete = await listTools(closed, 2);
++  assert.equal(afterDelete.status, 400);
++  await assertAlive(kept, 3);
++});
++
++test('DELETE of an unknown session is rejected and does not affect others', async () => {
++  const kept = await openSession();
++  const unknown = await send('DELETE', '00000000-0000-0000-0000-000000000000', undefined);
++  assert.equal(unknown.status, 400);
++  await assertAlive(kept, 2);
++});
