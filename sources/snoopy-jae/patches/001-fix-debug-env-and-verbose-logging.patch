@@ -1,8 +1,7 @@
-diff --git a/src/index.ts b/src/index.ts
-index 3966524..93cbde5 100644
---- a/src/index.ts
-+++ b/src/index.ts
-@@ -45,8 +45,10 @@ const argv = yargs(hideBin(process.argv))
+diff -ruN -x .git a/src/index.ts b/src/index.ts
+--- a/src/index.ts	2026-11-04 16:11:03.050868514 +0000
++++ b/src/index.ts	2026-11-04 16:11:03.194880733 +0000
+@@ -45,8 +45,10 @@
   * Main application entry point
   */
  async function main() {
@@ -15,11 +14,10 @@ index 3966524..93cbde5 100644
    
    try {
      
-diff --git a/src/server.ts b/src/server.ts
-index b8367ff..2651728 100644
---- a/src/server.ts
-+++ b/src/server.ts
-@@ -23,7 +23,7 @@ export class SearXNGMCPServer {
+diff -ruN -x .git a/src/server.ts b/src/server.ts
+--- a/src/server.ts	2026-11-04 16:11:03.050868514 +0000
++++ b/src/server.ts	2026-11-04 16:11:03.194880733 +0000
+@@ -23,7 +23,7 @@
  
    constructor(config: Config, logger: Logger) {
      this.logger = logger;
@@ -28,10 +26,9 @@ index b8367ff..2651728 100644
  
      // Initialize MCP server
      this.server = new Server(
-diff --git a/src/services/searxng-api.ts b/src/services/searxng-api.ts
-index 7109281..f1e1c51 100644
---- a/src/services/searxng-api.ts
-+++ b/src/services/searxng-api.ts
+diff -ruN -x .git a/src/services/searxng-api.ts b/src/services/searxng-api.ts
+--- a/src/services/searxng-api.ts	2026-11-04 16:11:03.050868514 +0000
++++ b/src/services/searxng-api.ts	2026-11-04 16:11:03.194880733 +0000
 @@ -3,6 +3,8 @@
   * Provides interface to SearXNG search API with Basic Auth support
   */
@@ -41,7 +38,7 @@ index 7109281..f1e1c51 100644
  /**
   * Valid language codes supported by SearXNG
   * Based on official SearXNG sxng_locales.py
-@@ -190,15 +192,18 @@ export class SearXNGApiClient {
+@@ -190,15 +192,18 @@
    private baseUrl: string;
    private auth?: { username: string; password: string };
    private timeout: number;
@@ -61,7 +58,7 @@ index 7109281..f1e1c51 100644
    }
  
    /**
-@@ -248,6 +253,8 @@ export class SearXNGApiClient {
+@@ -248,6 +253,8 @@
        const controller = new AbortController();
        const timeoutId = setTimeout(() => controller.abort(), this.timeout);
  
@@ -70,7 +67,7 @@ index 7109281..f1e1c51 100644
        const response = await fetch(url, {
          method: "GET",
          headers: {
-@@ -260,14 +267,42 @@ export class SearXNGApiClient {
+@@ -260,14 +267,42 @@
  
        clearTimeout(timeoutId);
  
@@ -114,10 +111,9 @@ index 7109281..f1e1c51 100644
          throw new Error(`Search failed for query "${query}": ${error.message}`);
        }
        throw new Error(`Search failed for query "${query}": Unknown error`);
-diff --git a/src/tools/searxng.ts b/src/tools/searxng.ts
-index e042531..b7c98ad 100644
---- a/src/tools/searxng.ts
-+++ b/src/tools/searxng.ts
+diff -ruN -x .git a/src/tools/searxng.ts b/src/tools/searxng.ts
+--- a/src/tools/searxng.ts	2026-11-04 16:11:03.050868514 +0000
++++ b/src/tools/searxng.ts	2026-11-04 16:11:03.194880733 +0000
 @@ -5,6 +5,7 @@
  
  import { SearXNGApiClient, SearchOptions, MultiSearchResult } from '../services/searxng-api.js';
@@ -126,7 +122,7 @@ index e042531..b7c98ad 100644
  
  /**
   * Simplified search result for MCP response
-@@ -54,10 +55,12 @@ export interface MultiSearchResponse {
+@@ -54,10 +55,12 @@
  export class SearXNGSearchTool {
    private apiClient: SearXNGApiClient;
  

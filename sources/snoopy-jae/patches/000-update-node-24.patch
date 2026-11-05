@@ -1,6 +1,6 @@
 diff -ruN -x .git a/Dockerfile b/Dockerfile
---- a/Dockerfile	2026-11-04 12:44:53.837063137 +0000
-+++ b/Dockerfile	2026-11-04 14:29:18.023402032 +0000
+--- a/Dockerfile	2026-11-04 16:11:02.890854925 +0000
++++ b/Dockerfile	2026-11-04 16:11:02.986863082 +0000
 @@ -1,5 +1,5 @@
  # Multi-stage build for SearXNG MCP Server
 -FROM node:18-alpine AS builder
@@ -18,9 +18,9 @@ diff -ruN -x .git a/Dockerfile b/Dockerfile
  # Install dumb-init for proper signal handling
  RUN apk add --no-cache dumb-init
 diff -ruN -x .git a/README.md b/README.md
---- a/README.md	2026-11-04 12:44:53.929065328 +0000
-+++ b/README.md	2026-11-04 14:29:18.023402032 +0000
-@@ -170,7 +170,7 @@
+--- a/README.md	2026-11-04 16:11:02.890854925 +0000
++++ b/README.md	2026-11-04 16:11:02.990863422 +0000
+@@ -167,7 +167,7 @@
  
  ### Prerequisites
  
@@ -30,8 +30,8 @@ diff -ruN -x .git a/README.md b/README.md
  - TypeScript
  
 diff -ruN -x .git a/package-lock.json b/package-lock.json
---- a/package-lock.json	2026-11-04 12:44:53.841063232 +0000
-+++ b/package-lock.json	2026-11-04 14:29:50.615487862 +0000
+--- a/package-lock.json	2026-11-04 16:11:02.898855605 +0000
++++ b/package-lock.json	2026-11-04 16:11:02.994863762 +0000
 @@ -1,12 +1,12 @@
  {
    "name": "searxng-mul-mcp",
@@ -97,8 +97,8 @@ diff -ruN -x .git a/package-lock.json b/package-lock.json
        "license": "MIT"
      },
 diff -ruN -x .git a/package.json b/package.json
---- a/package.json	2026-11-04 12:44:53.841063232 +0000
-+++ b/package.json	2026-11-04 14:29:50.615487862 +0000
+--- a/package.json	2026-11-04 16:11:02.898855605 +0000
++++ b/package.json	2026-11-04 16:11:02.994863762 +0000
 @@ -39,7 +39,7 @@
    },
    "devDependencies": {

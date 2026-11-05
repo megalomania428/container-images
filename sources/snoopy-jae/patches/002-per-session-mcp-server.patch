@@ -1,6 +1,6 @@
 diff -ruN -x .git a/src/index.ts b/src/index.ts
---- a/src/index.ts	2026-11-04 08:39:00.967814768 +0000
-+++ b/src/index.ts	2026-11-04 10:33:20.240997201 +0000
+--- a/src/index.ts	2026-11-04 16:11:03.338892951 +0000
++++ b/src/index.ts	2026-11-04 16:11:03.358894648 +0000
 @@ -87,7 +87,7 @@
      
      // Create and start transport
@@ -11,8 +11,8 @@ diff -ruN -x .git a/src/index.ts b/src/index.ts
      // Setup graceful shutdown
      const shutdown = async () => {
 diff -ruN -x .git a/src/server.ts b/src/server.ts
---- a/src/server.ts	2026-11-04 08:39:00.967814768 +0000
-+++ b/src/server.ts	2026-11-04 08:42:29.280964508 +0000
+--- a/src/server.ts	2026-11-04 16:11:03.338892951 +0000
++++ b/src/server.ts	2026-11-04 16:11:03.358894648 +0000
 @@ -17,16 +17,21 @@
   * MCP server for SearXNG search functionality
   */
@@ -80,8 +80,8 @@ diff -ruN -x .git a/src/server.ts b/src/server.ts
 -  }
  }
 diff -ruN -x .git a/src/transports/http.ts b/src/transports/http.ts
---- a/src/transports/http.ts	2026-11-04 08:39:00.879812590 +0000
-+++ b/src/transports/http.ts	2026-11-04 09:11:06.436893834 +0000
+--- a/src/transports/http.ts	2026-11-04 16:11:03.246885145 +0000
++++ b/src/transports/http.ts	2026-11-04 16:11:03.358894648 +0000
 @@ -8,25 +8,33 @@
  import { Server } from '@modelcontextprotocol/sdk/server/index.js';
  import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -262,8 +262,8 @@ diff -ruN -x .git a/src/transports/http.ts b/src/transports/http.ts
        const forceCloseTimeout = setTimeout(() => {
          this.logger.warn('Force closing HTTP server connections');
 diff -ruN -x .git a/src/transports/index.ts b/src/transports/index.ts
---- a/src/transports/index.ts	2026-11-04 08:39:00.879812590 +0000
-+++ b/src/transports/index.ts	2026-11-04 08:42:29.284964607 +0000
+--- a/src/transports/index.ts	2026-11-04 16:11:03.246885145 +0000
++++ b/src/transports/index.ts	2026-11-04 16:11:03.362894988 +0000
 @@ -3,8 +3,7 @@
   * Supports both stdio and HTTP transport protocols
   */
@@ -297,8 +297,8 @@ diff -ruN -x .git a/src/transports/index.ts b/src/transports/index.ts
        default:
          throw new Error(`Unsupported transport type: ${config.type}`);
 diff -ruN -x .git a/src/transports/stdio.ts b/src/transports/stdio.ts
---- a/src/transports/stdio.ts	2026-11-04 08:39:00.879812590 +0000
-+++ b/src/transports/stdio.ts	2026-11-04 10:33:20.240997201 +0000
+--- a/src/transports/stdio.ts	2026-11-04 16:11:03.246885145 +0000
++++ b/src/transports/stdio.ts	2026-11-04 16:11:03.362894988 +0000
 @@ -5,7 +5,7 @@
  
  import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -320,8 +320,8 @@ diff -ruN -x .git a/src/transports/stdio.ts b/src/transports/stdio.ts
      this.transport = new StdioServerTransport();
    }
 diff -ruN -x .git a/src/transports/types.ts b/src/transports/types.ts
---- a/src/transports/types.ts	2026-11-04 08:39:00.879812590 +0000
-+++ b/src/transports/types.ts	2026-11-04 08:42:29.284964607 +0000
+--- a/src/transports/types.ts	2026-11-04 16:11:03.246885145 +0000
++++ b/src/transports/types.ts	2026-11-04 16:11:03.362894988 +0000
 @@ -6,6 +6,11 @@
  import { Server } from '@modelcontextprotocol/sdk/server/index.js';
  
@@ -343,7 +343,7 @@ diff -ruN -x .git a/src/transports/types.ts b/src/transports/types.ts
  }
 diff -ruN -x .git a/test/http-session.test.mjs b/test/http-session.test.mjs
 --- a/test/http-session.test.mjs	1970-01-01 00:00:00.000000000 +0000
-+++ b/test/http-session.test.mjs	2026-11-04 10:06:41.769986521 +0000
++++ b/test/http-session.test.mjs	2026-11-04 16:11:03.362894988 +0000
 @@ -0,0 +1,188 @@
 +/**
 + * Regression tests for HTTP session termination

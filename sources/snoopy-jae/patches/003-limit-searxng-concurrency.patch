@@ -1,6 +1,6 @@
 diff -ruN -x .git a/.env.example b/.env.example
---- a/.env.example	2026-11-04 08:39:00.871812392 +0000
-+++ b/.env.example	2026-11-04 10:34:28.770479764 +0000
+--- a/.env.example	2026-11-04 16:11:03.394897703 +0000
++++ b/.env.example	2026-11-04 16:11:03.530909243 +0000
 @@ -8,6 +8,9 @@
  # USERNAME=your_username
  # PASSWORD=your_password
@@ -12,8 +12,8 @@ diff -ruN -x .git a/.env.example b/.env.example
  # TRANSPORT=stdio
  # HOST=0.0.0.0
 diff -ruN -x .git a/README.md b/README.md
---- a/README.md	2026-11-04 08:39:00.871812392 +0000
-+++ b/README.md	2026-11-04 10:34:28.770479764 +0000
+--- a/README.md	2026-11-04 16:11:03.474904491 +0000
++++ b/README.md	2026-11-04 16:11:03.530909243 +0000
 @@ -49,6 +49,9 @@
  USERNAME=your_username
  PASSWORD=your_password
@@ -25,8 +25,8 @@ diff -ruN -x .git a/README.md b/README.md
  TRANSPORT=stdio|http
  HOST=0.0.0.0        # HTTP mode only
 diff -ruN -x .git a/src/config/index.ts b/src/config/index.ts
---- a/src/config/index.ts	2026-11-04 08:39:00.879812590 +0000
-+++ b/src/config/index.ts	2026-11-04 10:34:05.037963769 +0000
+--- a/src/config/index.ts	2026-11-04 16:11:03.398898042 +0000
++++ b/src/config/index.ts	2026-11-04 16:11:03.534909582 +0000
 @@ -10,6 +10,7 @@
        username: string;
        password: string;
@@ -67,8 +67,8 @@ diff -ruN -x .git a/src/config/index.ts b/src/config/index.ts
      transport: {
        type: transport,
 diff -ruN -x .git a/src/services/searxng-api.ts b/src/services/searxng-api.ts
---- a/src/services/searxng-api.ts	2026-11-04 08:39:00.975814966 +0000
-+++ b/src/services/searxng-api.ts	2026-11-04 10:34:19.730282903 +0000
+--- a/src/services/searxng-api.ts	2026-11-04 16:11:03.494906188 +0000
++++ b/src/services/searxng-api.ts	2026-11-04 16:11:03.534909582 +0000
 @@ -4,6 +4,7 @@
   */
  
@@ -122,8 +122,8 @@ diff -ruN -x .git a/src/services/searxng-api.ts b/src/services/searxng-api.ts
      });
  
 diff -ruN -x .git a/src/tools/searxng.ts b/src/tools/searxng.ts
---- a/src/tools/searxng.ts	2026-11-04 08:39:00.975814966 +0000
-+++ b/src/tools/searxng.ts	2026-11-04 10:34:28.778479939 +0000
+--- a/src/tools/searxng.ts	2026-11-04 16:11:03.494906188 +0000
++++ b/src/tools/searxng.ts	2026-11-04 16:11:03.534909582 +0000
 @@ -60,7 +60,8 @@
        config.searxng.url,
        config.searxng.auth,
@@ -136,7 +136,7 @@ diff -ruN -x .git a/src/tools/searxng.ts b/src/tools/searxng.ts
  
 diff -ruN -x .git a/src/utils/semaphore.ts b/src/utils/semaphore.ts
 --- a/src/utils/semaphore.ts	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/utils/semaphore.ts	2026-11-04 09:11:06.444894025 +0000
++++ b/src/utils/semaphore.ts	2026-11-04 16:11:03.534909582 +0000
 @@ -0,0 +1,88 @@
 +/**
 + * Counting semaphore limiting the number of concurrently running operations

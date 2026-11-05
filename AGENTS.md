@@ -37,7 +37,7 @@ For each new or regenerated patch N, run from the project repository root with a
 NAME='<source name>'
 UP='/workspace/github/<repo>'
 REF='<pinned upstream ref from the source configuration>'
-PATCH="${PWD}/sources/${NAME}/patches/000N-description.patch"
+PATCH="${PWD}/sources/${NAME}/patches/00N-description.patch"
 ```
 
 - Fetch the pinned ref without changing the shared clone's checkout:
@@ -60,7 +60,7 @@ PATCH="${PWD}/sources/${NAME}/patches/000N-description.patch"
 - List all patches before N in apply order using absolute paths, then apply them to `a` and `b`. When regenerating N, apply its current version to `b` too before editing:
 
   ```bash
-  PREV=("${PWD}/sources/${NAME}/patches/0001-description.patch")
+  PREV=("${PWD}/sources/${NAME}/patches/001-description.patch")
   for tree in a b; do
     for p in "${PREV[@]}"; do
       patch -d "${W}/${tree}" -p1 --batch --forward -i "${p}"
