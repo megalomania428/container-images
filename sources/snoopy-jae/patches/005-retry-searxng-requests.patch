@@ -1,0 +1,1159 @@
+diff -ruN -x .git a/.env.example b/.env.example
+--- a/.env.example	2026-11-05 05:35:18.734064086 +0000
++++ b/.env.example	2026-11-05 12:34:42.533048661 +0000
+@@ -11,6 +11,12 @@
+ # Optional: Max concurrent SearXNG requests per search call (default: 3)
+ # SEARXNG_CONCURRENCY=3
+ 
++# Optional: Deadline of one search call with all retries, in ms (default: 20000)
++# SEARXNG_DEADLINE_MS=20000
++
++# Optional: Timeout of one SearXNG request attempt, in ms (default: 5000)
++# SEARXNG_ATTEMPT_TIMEOUT_MS=5000
++
+ # Optional: Transport configuration
+ # TRANSPORT=stdio
+ # HOST=0.0.0.0
+diff -ruN -x .git a/README.md b/README.md
+--- a/README.md	2026-11-05 05:35:18.734064086 +0000
++++ b/README.md	2026-11-05 12:34:42.997060110 +0000
+@@ -52,6 +52,12 @@
+ # Optional: Max concurrent SearXNG requests per search call (default: 3)
+ SEARXNG_CONCURRENCY=3
+ 
++# Optional: Deadline of one search call with all retries, in ms (default: 20000)
++SEARXNG_DEADLINE_MS=20000
++
++# Optional: Timeout of one SearXNG request attempt, in ms (default: 5000)
++SEARXNG_ATTEMPT_TIMEOUT_MS=5000
++
+ # Optional: Transport configuration (can also use CLI flags)
+ TRANSPORT=stdio|http
+ HOST=0.0.0.0        # HTTP mode only
+@@ -241,10 +247,10 @@
+ 
+ The server implements comprehensive error handling:
+ 
+-- **Network errors**: Automatic retry mechanism (up to 3 attempts)
++- **Network errors**: Per-query retries with backoff until `SEARXNG_DEADLINE_MS` (default: 20 seconds)
+ - **Authentication errors**: Clear error messages for auth failures
+ - **API rate limiting**: Graceful degradation and error reporting
+-- **Timeout handling**: Configurable request timeout (default: 30 seconds)
++- **Timeout handling**: Per-attempt timeout `SEARXNG_ATTEMPT_TIMEOUT_MS` (default: 5 seconds)
+ 
+ ## Monitoring
+ 
+@@ -282,7 +288,7 @@
+ 1. **Connection Failed**: Check your `SEARXNG_URL` and network connectivity
+ 2. **Authentication Error**: Verify `USERNAME` and `PASSWORD` for Basic Auth
+ 3. **Port Already in Use**: Change the `PORT` environment variable for HTTP mode
+-4. **Search Timeout**: Increase timeout or check SearXNG server performance
++4. **Search Timeout**: Raise `SEARXNG_ATTEMPT_TIMEOUT_MS`/`SEARXNG_DEADLINE_MS` or check SearXNG performance
+ 
+ ### Debug Mode
+ 
+diff -ruN -x .git a/src/config/index.ts b/src/config/index.ts
+--- a/src/config/index.ts	2026-11-05 05:35:18.734064086 +0000
++++ b/src/config/index.ts	2026-11-05 12:34:12.796315122 +0000
+@@ -11,6 +11,10 @@
+       password: string;
+     };
+     concurrency: number;
++    /** Deadline of one search call with all attempts and pauses, in milliseconds */
++    deadlineMs: number;
++    /** Timeout of one request attempt, in milliseconds */
++    attemptTimeoutMs: number;
+   };
+   transport: {
+     type: "stdio" | "http";
+@@ -20,6 +24,35 @@
+   debug: boolean;
+ }
+ 
++/** Largest delay accepted by setTimeout, in milliseconds */
++const MAX_TIMEOUT_MS = 2147483647;
++
++/**
++ * Read a duration in milliseconds from an environment variable: unset or
++ * empty means the default, anything but digits from 1 to MAX_TIMEOUT_MS
++ * fails the startup
++ */
++function readMilliseconds(name: string, fallback: number, examples: [number, number]): number {
++  const value = process.env[name];
++  if (!value) {
++    return fallback;
++  }
++  const ms = /^[0-9]+$/.test(value) ? Number(value) : NaN;
++  if (!(ms >= 1 && ms <= MAX_TIMEOUT_MS)) {
++    throw new Error(`
++❌ Invalid ${name} configuration!
++
++${name} must be a whole number of milliseconds (digits only, from 1 to ${MAX_TIMEOUT_MS}).
++Current ${name} value: ${value}
++
++Examples:
++  export ${name}=${examples[0]}
++  export ${name}=${examples[1]}
++`);
++  }
++  return ms;
++}
++
+ /**
+  * Load and validate configuration from environment variables
+  */
+@@ -102,11 +135,17 @@
+     }
+   }
+ 
++  // Validate SearXNG timings: unset or empty means default
++  const deadlineMs = readMilliseconds("SEARXNG_DEADLINE_MS", 20000, [20000, 30000]);
++  const attemptTimeoutMs = readMilliseconds("SEARXNG_ATTEMPT_TIMEOUT_MS", 5000, [5000, 10000]);
++
+   return {
+     searxng: {
+       url: searxngUrl,
+       auth,
+       concurrency,
++      deadlineMs,
++      attemptTimeoutMs,
+     },
+     transport: {
+       type: transport,
+diff -ruN -x .git a/src/services/searxng-api.ts b/src/services/searxng-api.ts
+--- a/src/services/searxng-api.ts	2026-11-05 05:35:18.738064184 +0000
++++ b/src/services/searxng-api.ts	2026-11-05 14:07:20.510863160 +0000
+@@ -168,16 +168,38 @@
+   unresponsive_engines?: [string, string][];
+ }
+ 
++/**
++ * Engine that did not answer SearXNG, parsed from unresponsive_engines
++ */
++export interface UnresponsiveEngine {
++  /** Engine name */
++  engine: string;
++  /** Reason without the "Suspended: " prefix */
++  reason: string;
++  /** Whether SearXNG skipped the engine because it is suspended */
++  suspended: boolean;
++}
++
++/**
++ * Result of one query after all attempts
++ */
++export interface QueryResult {
++  query: string;
++  success: boolean;
++  data: SearchResult | null;
++  error: string | null;
++  /**
++   * Engines that did not answer in the last attempt (a retry cut short by the
++   * deadline keeps the attempt before it), omitted when there are none
++   */
++  unresponsive_engines?: UnresponsiveEngine[];
++}
++
+ export interface MultiSearchResult {
+   /** List of search queries */
+   queries: string[];
+   /** Results for each query */
+-  results: Array<{
+-    query: string;
+-    success: boolean;
+-    data: SearchResult | null;
+-    error: string | null;
+-  }>;
++  results: QueryResult[];
+   /** Summary statistics */
+   summary: {
+     total: number;
+@@ -187,27 +209,107 @@
+ }
+ 
+ /**
++ * Outcome of one request attempt: the result returned when no retry follows
++ */
++interface AttemptOutcome {
++  result: QueryResult;
++  /** Reason to retry; undefined means the result is final */
++  retryReason?: string;
++  /** Pause requested by the Retry-After header, in milliseconds */
++  retryAfterMs?: number;
++}
++
++/** Prefix SearXNG puts before the reason of a suspended engine */
++const SUSPENDED_PREFIX = "Suspended: ";
++
++/**
++ * Reasons that suspend an engine for minutes or longer, so a retry within
++ * one call cannot get past them
++ */
++const LONG_BAN_REASONS = new Set(["CAPTCHA", "access denied", "too many requests"]);
++
++/** Pause schedule of backoffDelay from go-lib-ci */
++const BACKOFF_INITIAL_MS = 1000;
++const BACKOFF_STEP_MS = 1000;
++const BACKOFF_STEP_ATTEMPTS = 3;
++const BACKOFF_CAP_MS = 7000;
++
++/**
++ * Pause after the given failed attempt (0-indexed): it rises by one step
++ * every BACKOFF_STEP_ATTEMPTS attempts up to the cap and restarts from the
++ * initial pause after one block at the cap
++ */
++function backoffDelay(attempt: number): number {
++  const capBlocks = Math.floor(BACKOFF_CAP_MS / BACKOFF_STEP_MS);
++  const cycle = (capBlocks + 1) * BACKOFF_STEP_ATTEMPTS;
++  const delay =
++    Math.floor((attempt % cycle) / BACKOFF_STEP_ATTEMPTS) * BACKOFF_STEP_MS + BACKOFF_INITIAL_MS;
++  return Math.min(delay, BACKOFF_CAP_MS);
++}
++
++/**
++ * Parse a Retry-After header given in seconds or as an HTTP date into
++ * milliseconds; an absent or malformed header gives undefined
++ */
++function parseRetryAfter(value: string | null): number | undefined {
++  if (!value) {
++    return undefined;
++  }
++  const trimmed = value.trim();
++  if (/^[0-9]+$/.test(trimmed)) {
++    return Number(trimmed) * 1000;
++  }
++  const date = Date.parse(trimmed);
++  return Number.isNaN(date) ? undefined : Math.max(date - Date.now(), 0);
++}
++
++/**
++ * Convert unresponsive_engines pairs into objects, skipping malformed entries
++ */
++function parseUnresponsiveEngines(value: unknown): UnresponsiveEngine[] {
++  if (!Array.isArray(value)) {
++    return [];
++  }
++  const engines: UnresponsiveEngine[] = [];
++  for (const pair of value) {
++    if (!Array.isArray(pair) || typeof pair[0] !== "string" || typeof pair[1] !== "string") {
++      continue;
++    }
++    const suspended = pair[1].startsWith(SUSPENDED_PREFIX);
++    engines.push({
++      engine: pair[0],
++      reason: suspended ? pair[1].slice(SUSPENDED_PREFIX.length) : pair[1],
++      suspended,
++    });
++  }
++  return engines;
++}
++
++/**
+  * SearXNG API client with Basic Auth support
+  */
+ export class SearXNGApiClient {
+   private baseUrl: string;
+   private auth?: { username: string; password: string };
+-  private timeout: number;
++  private attemptTimeout: number;
+   private logger?: Logger;
+   private concurrency: number;
++  private deadline: number;
+ 
+   constructor(
+     baseUrl: string,
+     auth?: { username: string; password: string },
+-    timeout: number = 30000,
++    attemptTimeout: number = 5000,
+     logger?: Logger,
+-    concurrency: number = 3
++    concurrency: number = 3,
++    deadline: number = 20000
+   ) {
+     this.baseUrl = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
+     this.auth = auth;
+-    this.timeout = timeout;
++    this.attemptTimeout = attemptTimeout;
+     this.logger = logger;
+     this.concurrency = concurrency;
++    this.deadline = deadline;
+   }
+ 
+   /**
+@@ -226,12 +328,44 @@
+   }
+ 
+   /**
+-   * Execute a single search query
++   * Build a failed query result with the query in the error message
++   */
++  private failure(query: string, message: string): QueryResult {
++    return {
++      query,
++      success: false,
++      data: null,
++      error: `Search failed for query "${query}": ${message}`,
++    };
++  }
++
++  /**
++   * Describe a failure of an attempt, telling the call deadline and the
++   * attempt timeout apart from other errors
++   */
++  private describeError(
++    error: unknown,
++    attemptSignal: AbortSignal,
++    deadlineSignal: AbortSignal
++  ): string {
++    if (deadlineSignal.aborted) {
++      return `deadline of ${this.deadline} ms exceeded during the attempt`;
++    }
++    if (attemptSignal.aborted) {
++      return `attempt timed out after ${this.attemptTimeout} ms`;
++    }
++    return error instanceof Error ? error.message : "Unknown error";
++  }
++
++  /**
++   * Execute one attempt of a search query; the attempt timeout and the call
++   * deadline also cover reading the response body
+    */
+-  private async searchSingle(
++  private async searchAttempt(
+     query: string,
+-    options?: SearchOptions
+-  ): Promise<SearchResult> {
++    options: SearchOptions | undefined,
++    deadlineSignal: AbortSignal
++  ): Promise<AttemptOutcome> {
+     const searchParams = new URLSearchParams({
+       q: query,
+       format: "json",
+@@ -252,11 +386,17 @@
+     }
+ 
+     const url = `${this.baseUrl}/search?${searchParams.toString()}`;
++    // An unusable SEARXNG_URL never recovers, so it fails without a retry
++    const protocol = URL.canParse(url) ? new URL(url).protocol : "";
++    if (protocol !== "http:" && protocol !== "https:") {
++      // The URL is not echoed: it may carry credentials
++      const reason = "invalid SearXNG URL: the scheme must be http or https";
++      return { result: this.failure(query, reason) };
++    }
++    const controller = new AbortController();
++    const timeoutId = setTimeout(() => controller.abort(), this.attemptTimeout);
+ 
+     try {
+-      const controller = new AbortController();
+-      const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+-
+       this.logger?.debug(`Fetching search URL`, { url });
+ 
+       const response = await fetch(url, {
+@@ -264,13 +404,15 @@
+         headers: {
+           "User-Agent": "SearXNG-Mul-MCP-Client/1.0.0",
+           Accept: "application/json",
++          // SearXNG translates engine error reasons into the request language;
++          // the locale cookie also overrides ui.default_locale of the instance
++          "Accept-Language": "en",
++          Cookie: "locale=en",
+           ...this.getAuthHeaders(),
+         },
+-        signal: controller.signal,
++        signal: AbortSignal.any([controller.signal, deadlineSignal]),
+       });
+ 
+-      clearTimeout(timeoutId);
+-
+       this.logger?.debug(`Got HTTP response`, {
+         url,
+         status: response.status,
+@@ -279,37 +421,136 @@
+       });
+ 
+       if (!response.ok) {
++        const status = response.status;
++        const retryAfterMs =
++          status === 429 || status === 503
++            ? parseRetryAfter(response.headers.get("retry-after"))
++            : undefined;
+         let responseBody = '';
++        let bodyError: string | undefined;
+         try {
+           responseBody = await response.text();
+-        } catch {
+-          responseBody = '<failed to read body>';
++        } catch (error) {
++          bodyError = this.describeError(error, controller.signal, deadlineSignal);
+         }
+         this.logger?.error(`HTTP error from SearXNG`, {
+           url,
+-          status: response.status,
++          status,
+           statusText: response.statusText,
+           headers: Object.fromEntries(response.headers.entries()),
+-          body: responseBody.slice(0, 2000),
++          body: bodyError === undefined ? responseBody.slice(0, 2000) : `<failed to read body: ${bodyError}>`,
+         });
+-        throw new Error(
+-          `HTTP ${response.status}: ${response.statusText}` +
+-          (responseBody ? ` — body: ${responseBody.slice(0, 500)}` : '')
+-        );
++        if (bodyError !== undefined) {
++          // A timeout or a network error while reading the body may pass on a
++          // retry whatever the status, Retry-After of the status still applies
++          const message = `HTTP ${status}: ${response.statusText} — failed to read body: ${bodyError}`;
++          return { result: this.failure(query, message), retryReason: message, retryAfterMs };
++        }
++        const message =
++          `HTTP ${status}: ${response.statusText}` +
++          (responseBody ? ` — body: ${responseBody.slice(0, 500)}` : '');
++        return {
++          result: this.failure(query, message),
++          retryReason: status >= 500 || status === 429 ? `HTTP ${status}` : undefined,
++          retryAfterMs,
++        };
+       }
+ 
+       const data = (await response.json()) as SearchResult;
+-      return data;
++      if (!data || !Array.isArray(data.results)) {
++        return { result: this.failure(query, "invalid response: results is not an array") };
++      }
++      const engines = parseUnresponsiveEngines(data.unresponsive_engines);
++      const diagnostics = engines.length ? { unresponsive_engines: engines } : {};
++      // Empty results without reasons are an honest answer, not a failure
++      if (data.results.length > 0 || engines.length === 0) {
++        return { result: { query, success: true, data, error: null, ...diagnostics } };
++      }
++      const reasons = engines
++        .map((e) => `${e.engine} – ${e.suspended ? SUSPENDED_PREFIX : ""}${e.reason}`)
++        .join("; ");
++      return {
++        result: {
++          query,
++          success: false,
++          data: null,
++          error: `no results: ${reasons}`,
++          unresponsive_engines: engines,
++        },
++        retryReason: engines.some((e) => !LONG_BAN_REASONS.has(e.reason))
++          ? `no results: ${reasons}`
++          : undefined,
++      };
+     } catch (error) {
+-      if (error instanceof Error) {
+-        this.logger?.debug(`Search error detail`, {
+-          url,
+-          message: error.message,
+-          name: error.name,
+-        });
+-        throw new Error(`Search failed for query "${query}": ${error.message}`);
++      const message = this.describeError(error, controller.signal, deadlineSignal);
++      this.logger?.debug(`Search error detail`, {
++        url,
++        message,
++        name: error instanceof Error ? error.name : undefined,
++      });
++      // Invalid JSON is permanent, network errors and timeouts may pass
++      return {
++        result: this.failure(query, message),
++        retryReason: error instanceof SyntaxError ? undefined : message,
++      };
++    } finally {
++      clearTimeout(timeoutId);
++    }
++  }
++
++  /**
++   * Return the final result of a query and log an empty answer with reasons
++   */
++  private finish(query: string, attempts: number, result: QueryResult): QueryResult {
++    if (!result.success && result.unresponsive_engines) {
++      this.logger?.warn(`SearXNG returned no results`, {
++        query,
++        attempts,
++        unresponsive_engines: result.unresponsive_engines,
++      });
++    }
++    return result;
++  }
++
++  /**
++   * Execute a search query with retries until it succeeds, fails permanently
++   * or the pause before the next attempt does not fit into the deadline; the
++   * limiter slot is held only during an attempt, not during a pause
++   */
++  private async searchWithRetries(
++    query: string,
++    options: SearchOptions | undefined,
++    limiter: Semaphore,
++    deadlineAt: number,
++    deadlineSignal: AbortSignal
++  ): Promise<QueryResult> {
++    const notStarted = `deadline of ${this.deadline} ms exceeded before the request could start`;
++    let last: AttemptOutcome | undefined;
++    for (let attempt = 1; ; attempt++) {
++      const release = await limiter.acquire(deadlineSignal).catch(() => undefined);
++      if (!release || deadlineSignal.aborted || deadlineAt <= Date.now()) {
++        release?.();
++        return last
++          ? this.finish(query, attempt - 1, last.result)
++          : this.failure(query, notStarted);
+       }
+-      throw new Error(`Search failed for query "${query}": Unknown error`);
++      const outcome = await this.searchAttempt(query, options, deadlineSignal).finally(release);
++      // A retry cut short by the deadline tells less than the attempt before it
++      if (last && deadlineSignal.aborted && outcome.retryReason !== undefined) {
++        return this.finish(query, attempt, last.result);
++      }
++      last = outcome;
++      const delay = Math.max(backoffDelay(attempt - 1), outcome.retryAfterMs ?? 0);
++      if (outcome.retryReason === undefined || delay >= deadlineAt - Date.now()) {
++        return this.finish(query, attempt, outcome.result);
++      }
++      this.logger?.warn(`Retrying SearXNG request`, {
++        query,
++        attempt: attempt + 1,
++        delay_ms: delay,
++        reason: outcome.retryReason,
++      });
++      await new Promise((resolve) => setTimeout(resolve, delay));
+     }
+   }
+ 
+@@ -324,28 +565,22 @@
+       throw new Error("At least one search query is required");
+     }
+ 
+-    // Create parallel search tasks with error handling; the per-call limiter
+-    // keeps at most `concurrency` requests to SearXNG in flight
++    // The per-call limiter keeps at most `concurrency` requests to SearXNG in
++    // flight; one deadline covers queueing, attempts and pauses of all queries
+     const limiter = new Semaphore(this.concurrency);
++    const deadlineAt = Date.now() + this.deadline;
++    const deadlineSignal = AbortSignal.timeout(this.deadline);
+     const searchTasks = queries.map(async (query) => {
+-      const release = await limiter.acquire();
+       try {
+-        const data = await this.searchSingle(query, options);
+-        return {
++        return await this.searchWithRetries(
+           query,
+-          success: true,
+-          data,
+-          error: null,
+-        };
++          options,
++          limiter,
++          deadlineAt,
++          deadlineSignal
++        );
+       } catch (error) {
+-        return {
+-          query,
+-          success: false,
+-          data: null,
+-          error: error instanceof Error ? error.message : "Unknown error",
+-        };
+-      } finally {
+-        release();
++        return this.failure(query, error instanceof Error ? error.message : "Unknown error");
+       }
+     });
+ 
+@@ -377,7 +612,7 @@
+ 
+       const response = await fetch(`${this.baseUrl}/`, {
+         method: "HEAD",
+-        headers: this.getAuthHeaders(),
++        headers: { "Accept-Language": "en", ...this.getAuthHeaders() },
+         signal: controller.signal,
+       });
+ 
+diff -ruN -x .git a/src/tools/searxng.ts b/src/tools/searxng.ts
+--- a/src/tools/searxng.ts	2026-11-05 05:35:18.738064184 +0000
++++ b/src/tools/searxng.ts	2026-11-05 14:07:22.950921127 +0000
+@@ -3,7 +3,12 @@
+  * Handles the search tool execution and result formatting
+  */
+ 
+-import { SearXNGApiClient, SearchOptions, MultiSearchResult } from '../services/searxng-api.js';
++import {
++  SearXNGApiClient,
++  SearchOptions,
++  MultiSearchResult,
++  UnresponsiveEngine,
++} from '../services/searxng-api.js';
+ import { Config } from '../config/index.js';
+ import { Logger } from '../utils/logger.js';
+ 
+@@ -33,6 +38,11 @@
+   success: boolean;
+   /** Error message if search failed */
+   error?: string;
++  /**
++   * Engines that did not answer SearXNG in the last attempt (a retry cut short
++   * by the deadline keeps the attempt before it), omitted when there are none
++   */
++  unresponsive_engines?: UnresponsiveEngine[];
+ }
+ 
+ /**
+@@ -59,9 +69,10 @@
+     this.apiClient = new SearXNGApiClient(
+       config.searxng.url,
+       config.searxng.auth,
+-      30000,
++      config.searxng.attemptTimeoutMs,
+       logger,
+-      config.searxng.concurrency
++      config.searxng.concurrency,
++      config.searxng.deadlineMs
+     );
+   }
+ 
+@@ -95,6 +106,9 @@
+    */
+   private formatResponse(multiResult: MultiSearchResult): MultiSearchResponse {
+     const searches: SearchResponse[] = multiResult.results.map(result => {
++      const diagnostics = result.unresponsive_engines
++        ? { unresponsive_engines: result.unresponsive_engines }
++        : {};
+       if (result.success && result.data) {
+         // Convert SearXNG results to simplified format
+         const results: SearchResult[] = result.data.results.map(item => ({
+@@ -108,6 +122,7 @@
+           results,
+           total_results: result.data.number_of_results,
+           success: true,
++          ...diagnostics,
+         };
+       } else {
+         return {
+@@ -116,6 +131,7 @@
+           total_results: 0,
+           success: false,
+           error: result.error || 'Unknown error',
++          ...diagnostics,
+         };
+       }
+     });
+diff -ruN -x .git a/test/search-retry.test.mjs b/test/search-retry.test.mjs
+--- a/test/search-retry.test.mjs	1970-01-01 00:00:00.000000000 +0000
++++ b/test/search-retry.test.mjs	2026-11-05 14:37:03.947479429 +0000
+@@ -0,0 +1,498 @@
++/**
++ * Regression tests for retries of SearXNG requests and their diagnostics
++ * Run after the build: node --test test/search-retry.test.mjs
++ * MCP_SERVER_ENTRY overrides the server entry point (default: build/index.js)
++ */
++
++import { test, before, after } from 'node:test';
++import assert from 'node:assert/strict';
++import { spawn } from 'node:child_process';
++import { createServer } from 'node:http';
++import { createInterface } from 'node:readline';
++import { fileURLToPath } from 'node:url';
++
++const entry =
++  process.env.MCP_SERVER_ENTRY ||
++  fileURLToPath(new URL('../build/index.js', import.meta.url));
++const item = { url: 'https://example.com/', title: 'Example', content: 'Example page' };
++
++let stub;
++let stubUrl;
++let main;
++let starved;
++const requests = new Map();
++const seenHeaders = new Map();
++const held = [];
++
++/**
++ * Reply to the stub request with a SearXNG JSON body
++ */
++function reply(res, results, unresponsive = []) {
++  res.writeHead(200, { 'Content-Type': 'application/json' });
++  res.end(JSON.stringify({ query: 'q', results, unresponsive_engines: unresponsive }));
++}
++
++/**
++ * Send the headers and part of the body, then break the connection once the
++ * client had time to receive them
++ */
++function breakAfterWrite(req, res, chunk) {
++  res.write(chunk, () => setTimeout(() => req.socket.destroy(), 100));
++}
++
++/**
++ * Answer a stub request according to its query and the number of requests
++ * for that query seen so far
++ */
++function handle(req, res) {
++  if (req.method === 'HEAD') {
++    res.end();
++    return;
++  }
++  const query = new URL(req.url, 'http://stub').searchParams.get('q');
++  const times = requests.get(query) ?? [];
++  times.push(Date.now());
++  requests.set(query, times);
++  seenHeaders.set(query, req.headers);
++  const first = times.length === 1;
++  switch (query) {
++    case 'recover':
++      return first ? reply(res, [], [['google', 'timeout']]) : reply(res, [item]);
++    case 'persistent':
++      return reply(res, [], [['brave', 'Suspended: timeout'], ['google', 'HTTP error']]);
++    case 'honest':
++      return reply(res, []);
++    case 'long-ban':
++      return reply(res, [], [['bing', 'access denied'], ['google', 'Suspended: CAPTCHA']]);
++    case 'partial':
++      return reply(res, [item], [['bing', 'Suspended: too many requests']]);
++    case 'drop':
++      return first ? req.socket.destroy() : reply(res, [item]);
++    case 'slow':
++      if (first) {
++        setTimeout(() => res.destroyed || reply(res, [item]), 1000);
++        return;
++      }
++      return reply(res, [item]);
++    case 'bad-gateway':
++      if (first) {
++        res.writeHead(502);
++        res.end('Bad Gateway');
++        return;
++      }
++      return reply(res, [item]);
++    case 'retry-after':
++      if (first) {
++        res.writeHead(429, { 'Retry-After': '2' });
++        res.end('Too Many Requests');
++        return;
++      }
++      return reply(res, [item]);
++    case 'retry-after-far':
++      res.writeHead(429, { 'Retry-After': '60' });
++      res.end('Too Many Requests');
++      return;
++    case 'bad-request':
++      res.writeHead(400, { 'Content-Type': 'application/json' });
++      res.end('{"error": "No query"}');
++      return;
++    case 'bad-request-hang':
++      if (first) {
++        // Headers and part of the body arrive, the rest never does
++        res.writeHead(400, { 'Content-Type': 'application/json' });
++        res.write('{"error": ');
++        held.push(res);
++        return;
++      }
++      return reply(res, [item]);
++    case 'retry-after-hang':
++      if (first) {
++        // Retry-After arrives with the headers, the body never ends
++        res.writeHead(429, { 'Retry-After': '2' });
++        res.write('Too Many');
++        held.push(res);
++        return;
++      }
++      return reply(res, [item]);
++    case 'unavailable-drop':
++      if (first) {
++        res.writeHead(503, { 'Retry-After': '2' });
++        breakAfterWrite(req, res, 'Service');
++        return;
++      }
++      return reply(res, [item]);
++    case 'bad-request-drop':
++      if (first) {
++        // The connection breaks in the middle of the body
++        res.writeHead(400, { 'Content-Type': 'application/json' });
++        breakAfterWrite(req, res, '{"error": ');
++        return;
++      }
++      return reply(res, [item]);
++    case 'not-found-hang':
++      if (first) {
++        res.writeHead(404, { 'Content-Type': 'text/plain' });
++        res.write('Not');
++        held.push(res);
++        return;
++      }
++      return reply(res, [item]);
++    case 'hang':
++      held.push(res);
++      return;
++    case 'reasons-then-hang':
++      return first ? reply(res, [], [['google', 'timeout']]) : held.push(res);
++    case 'bad-gateway-then-hang':
++      if (first) {
++        res.writeHead(502);
++        res.end('Bad Gateway');
++        return;
++      }
++      held.push(res);
++      return;
++    case 'reasons-then-body-hang':
++      if (first) {
++        return reply(res, [], [['google', 'timeout']]);
++      }
++      // Headers of a good answer arrive, the body never ends
++      res.writeHead(200, { 'Content-Type': 'application/json' });
++      res.write('{"results": ');
++      held.push(res);
++      return;
++    case 'bad-gateway-then-body-hang':
++      res.writeHead(502);
++      if (first) {
++        res.end('Bad Gateway');
++        return;
++      }
++      res.write('Bad');
++      held.push(res);
++      return;
++    case 'drop-then-hang':
++      return first ? req.socket.destroy() : held.push(res);
++    default:
++      return reply(res, [item]);
++  }
++}
++
++/**
++ * Start the MCP server over stdio with the given environment and return a
++ * function sending JSON-RPC requests to it
++ */
++async function startServer(env) {
++  const child = spawn(process.execPath, [entry, '--transport=stdio'], {
++    env: { ...process.env, SEARXNG_URL: stubUrl, ...env },
++    stdio: ['pipe', 'pipe', 'pipe'],
++  });
++  const logs = [];
++  createInterface({ input: child.stderr }).on('line', (line) => logs.push(line));
++  const pending = new Map();
++  let nextId = 1;
++  createInterface({ input: child.stdout }).on('line', (line) => {
++    const message = JSON.parse(line);
++    pending.get(message.id)?.(message);
++    pending.delete(message.id);
++  });
++  const request = (method, params) => {
++    const id = nextId++;
++    return new Promise((resolve, reject) => {
++      const timer = setTimeout(() => {
++        pending.delete(id);
++        reject(new Error(`No response to ${method} within 10 s`));
++      }, 10000);
++      pending.set(id, (message) => {
++        clearTimeout(timer);
++        resolve(message);
++      });
++      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
++    });
++  };
++  const init = await request('initialize', {
++    protocolVersion: '2025-03-26',
++    capabilities: {},
++    clientInfo: { name: 'search-retry-test', version: '1.0.0' },
++  });
++  assert.ok(init.result, 'initialize must succeed');
++  const initialized = { jsonrpc: '2.0', method: 'notifications/initialized' };
++  child.stdin.write(`${JSON.stringify(initialized)}\n`);
++  return { child, request, logs };
++}
++
++/**
++ * Wait until the server writes an ERROR line about an HTTP error of the
++ * query: stderr is a separate pipe and may lag behind the response
++ */
++async function waitHttpErrorLog(server, query, status) {
++  const matches = (line) =>
++    line.startsWith('[ERROR] ') &&
++    line.includes('HTTP error from SearXNG') &&
++    line.includes(`q=${query}&`) &&
++    line.includes(`"status":${status},`);
++  for (let i = 0; i < 50 && !server.logs.some(matches); i++) {
++    await new Promise((resolve) => setTimeout(resolve, 20));
++  }
++  assert.ok(server.logs.some(matches), `HTTP ${status} of ${query} must be logged as an error`);
++}
++
++/**
++ * Call the search tool and return the parsed result with the call duration
++ */
++async function search(server, queries) {
++  const started = Date.now();
++  const response = await server.request('tools/call', {
++    name: 'search',
++    arguments: { queries },
++  });
++  assert.equal(response.error, undefined, 'tool result expected, not a JSON-RPC error');
++  return {
++    elapsed: Date.now() - started,
++    isError: response.result.isError === true,
++    body: JSON.parse(response.result.content[0].text),
++  };
++}
++
++before(async () => {
++  stub = createServer(handle);
++  await new Promise((resolve, reject) => {
++    stub.once('error', reject);
++    stub.listen(0, '127.0.0.1', resolve);
++  });
++  stubUrl = `http://127.0.0.1:${stub.address().port}`;
++  main = await startServer({ SEARXNG_DEADLINE_MS: '3500', SEARXNG_ATTEMPT_TIMEOUT_MS: '500' });
++  starved = await startServer({
++    SEARXNG_CONCURRENCY: '1',
++    SEARXNG_DEADLINE_MS: '1000',
++    SEARXNG_ATTEMPT_TIMEOUT_MS: '5000',
++  });
++});
++
++after(async () => {
++  main?.child.kill();
++  starved?.child.kill();
++  for (const res of held) {
++    res.destroy();
++  }
++  stub.closeAllConnections();
++  await new Promise((resolve) => stub.close(resolve));
++});
++
++test('empty results with reasons are retried until results arrive', async () => {
++  const { isError, body } = await search(main, ['recover']);
++  assert.equal(requests.get('recover').length, 2);
++  assert.equal(isError, false);
++  const [result] = body.searches;
++  assert.equal(result.success, true);
++  assert.equal(result.results.length, 1);
++  assert.equal(result.unresponsive_engines, undefined, 'last attempt had no reasons');
++});
++
++test('persistent empty results end within the deadline with diagnostics', async () => {
++  const { elapsed, isError, body } = await search(main, ['persistent']);
++  assert.ok(requests.get('persistent').length >= 2, 'the query must be retried');
++  assert.ok(elapsed < 3500 + 1000, `call took ${elapsed} ms`);
++  assert.equal(isError, true);
++  const [result] = body.searches;
++  assert.equal(result.success, false);
++  assert.equal(result.error, 'no results: brave – Suspended: timeout; google – HTTP error');
++  assert.deepEqual(result.unresponsive_engines, [
++    { engine: 'brave', reason: 'timeout', suspended: true },
++    { engine: 'google', reason: 'HTTP error', suspended: false },
++  ]);
++});
++
++test('honest empty results are not retried', async () => {
++  const { isError, body } = await search(main, ['honest']);
++  assert.equal(requests.get('honest').length, 1);
++  assert.equal(isError, false);
++  const [result] = body.searches;
++  assert.equal(result.success, true);
++  assert.deepEqual(result.results, []);
++  assert.equal(result.unresponsive_engines, undefined);
++});
++
++test('empty results with only long bans are not retried', async () => {
++  const { body } = await search(main, ['long-ban']);
++  assert.equal(requests.get('long-ban').length, 1);
++  const [result] = body.searches;
++  assert.equal(result.success, false);
++  assert.equal(result.error, 'no results: bing – access denied; google – Suspended: CAPTCHA');
++  assert.deepEqual(result.unresponsive_engines, [
++    { engine: 'bing', reason: 'access denied', suspended: false },
++    { engine: 'google', reason: 'CAPTCHA', suspended: true },
++  ]);
++});
++
++test('results with reasons succeed and keep the diagnostics', async () => {
++  const { body } = await search(main, ['partial']);
++  assert.equal(requests.get('partial').length, 1);
++  const [result] = body.searches;
++  assert.equal(result.success, true);
++  assert.equal(result.results.length, 1);
++  assert.equal(result.error, undefined);
++  assert.deepEqual(result.unresponsive_engines, [
++    { engine: 'bing', reason: 'too many requests', suspended: true },
++  ]);
++});
++
++test('network errors, attempt timeouts and HTTP 502 are retried', async () => {
++  const { body } = await search(main, ['drop', 'slow', 'bad-gateway']);
++  assert.deepEqual(
++    body.searches.map((result) => [result.query, result.success]),
++    [
++      ['drop', true],
++      ['slow', true],
++      ['bad-gateway', true],
++    ]
++  );
++  for (const query of ['drop', 'slow', 'bad-gateway']) {
++    assert.equal(requests.get(query).length, 2, query);
++  }
++});
++
++test('HTTP 429 waits for Retry-After when it fits into the deadline', async () => {
++  const { body } = await search(main, ['retry-after']);
++  const times = requests.get('retry-after');
++  assert.equal(times.length, 2);
++  assert.ok(times[1] - times[0] >= 1900, `pause was ${times[1] - times[0]} ms`);
++  assert.equal(body.searches[0].success, true);
++});
++
++test('HTTP 429 with Retry-After beyond the deadline is not retried', async () => {
++  const { elapsed, body } = await search(main, ['retry-after-far']);
++  assert.equal(requests.get('retry-after-far').length, 1);
++  assert.ok(elapsed < 2000, `call took ${elapsed} ms`);
++  const [result] = body.searches;
++  assert.equal(result.success, false);
++  assert.match(result.error, /HTTP 429/);
++});
++
++test('HTTP 400 is not retried', async () => {
++  const { body } = await search(main, ['bad-request']);
++  assert.equal(requests.get('bad-request').length, 1);
++  assert.match(body.searches[0].error, /HTTP 400/);
++});
++
++/**
++ * Check that a query failed once while reading the body of an HTTP error,
++ * waited at least minPause ms between the attempt starts, succeeded on the
++ * retry and was logged as an HTTP error
++ */
++async function assertBodyFailureRetried(query, status, minPause = 0) {
++  const { body } = await search(main, [query]);
++  assert.equal(body.searches[0].success, true);
++  const times = requests.get(query);
++  assert.equal(times.length, 2);
++  assert.ok(times[1] - times[0] >= minPause, `pause was ${times[1] - times[0]} ms`);
++  await waitHttpErrorLog(main, query, status);
++}
++
++test('HTTP 400 with a hanging body is retried', async () => {
++  await assertBodyFailureRetried('bad-request-hang', 400);
++});
++
++test('HTTP 400 with a broken body is retried', async () => {
++  await assertBodyFailureRetried('bad-request-drop', 400);
++});
++
++test('HTTP 404 with a hanging body is retried', async () => {
++  await assertBodyFailureRetried('not-found-hang', 404);
++});
++
++test('HTTP 429 with a hanging body waits for Retry-After', async () => {
++  // The attempt timeout of 500 ms ends the first attempt, then 2 s pass
++  await assertBodyFailureRetried('retry-after-hang', 429, 2400);
++});
++
++test('HTTP 503 with a broken body waits for Retry-After', async () => {
++  // The body breaks 100 ms after the headers, then 2 s pass
++  await assertBodyFailureRetried('unavailable-drop', 503, 2000);
++});
++
++test('a query that cannot start before the deadline fails with a clear error', async () => {
++  const { elapsed, isError, body } = await search(starved, ['hang', 'second']);
++  assert.ok(elapsed < 1000 + 1000, `call took ${elapsed} ms`);
++  assert.equal(isError, true);
++  assert.deepEqual(
++    body.searches.map((result) => result.query),
++    ['hang', 'second']
++  );
++  assert.match(body.searches[0].error, /deadline of 1000 ms exceeded during the attempt/);
++  assert.equal(
++    body.searches[1].error,
++    'Search failed for query "second": deadline of 1000 ms exceeded before the request could start'
++  );
++  assert.equal(requests.get('second'), undefined, 'the second query must not reach SearXNG');
++});
++
++test('an attempt cut short by the deadline keeps the previous result', async () => {
++  // The first attempt fails at once, the retry after 1 s hangs until the deadline
++  // before the headers or while reading the body
++  const queries = [
++    'reasons-then-hang',
++    'reasons-then-body-hang',
++    'bad-gateway-then-hang',
++    'bad-gateway-then-body-hang',
++    'drop-then-hang',
++  ];
++  const server = await startServer({
++    SEARXNG_CONCURRENCY: String(queries.length),
++    SEARXNG_DEADLINE_MS: '1500',
++    SEARXNG_ATTEMPT_TIMEOUT_MS: '5000',
++  });
++  try {
++    const { elapsed, isError, body } = await search(server, queries);
++    assert.ok(elapsed < 1500 + 1000, `call took ${elapsed} ms`);
++    assert.equal(isError, true);
++    for (const [i, query] of queries.entries()) {
++      assert.equal(requests.get(query).length, 2, `${query} must be retried once`);
++      assert.doesNotMatch(body.searches[i].error, /deadline/, `${query} lost the previous result`);
++    }
++    const [reasons, reasonsBody, badGateway, badGatewayBody, drop] = body.searches;
++    for (const result of [reasons, reasonsBody]) {
++      assert.equal(result.error, 'no results: google – timeout');
++      assert.deepEqual(result.unresponsive_engines, [
++        { engine: 'google', reason: 'timeout', suspended: false },
++      ]);
++    }
++    assert.match(badGateway.error, /HTTP 502: Bad Gateway — body: Bad Gateway/);
++    assert.match(badGatewayBody.error, /HTTP 502: Bad Gateway — body: Bad Gateway/);
++    assert.match(drop.error, /^Search failed for query "drop-then-hang": /);
++    for (const query of ['reasons-then-hang', 'reasons-then-body-hang']) {
++      const warned = (line) =>
++        line.startsWith('[WARN] ') &&
++        line.includes('SearXNG returned no results') &&
++        line.includes(`"query":"${query}","attempts":2,`);
++      for (let i = 0; i < 50 && !server.logs.some(warned); i++) {
++        await new Promise((resolve) => setTimeout(resolve, 20));
++      }
++      const message = `the final empty answer of ${query} must be logged with 2 attempts`;
++      assert.ok(server.logs.some(warned), message);
++    }
++  } finally {
++    server.child.kill();
++  }
++});
++
++test('requests ask SearXNG for English reasons', async () => {
++  await search(main, ['english']);
++  const headers = seenHeaders.get('english');
++  assert.equal(headers['accept-language'], 'en');
++  // The locale cookie overrides ui.default_locale of the instance
++  assert.equal(headers.cookie, 'locale=en');
++});
++
++test('an unusable SEARXNG_URL fails at once without retries', async () => {
++  // A bare host fails at startup; host:port parses with the scheme "search.example.com:"
++  for (const url of ['search.example.com:8080', 'ftp://user:secret@127.0.0.1']) {
++    const server = await startServer({ SEARXNG_URL: url, SEARXNG_DEADLINE_MS: '3500' });
++    try {
++      const { elapsed, body } = await search(server, ['bad-url']);
++      assert.ok(elapsed < 1000, `${url}: call took ${elapsed} ms`);
++      assert.equal(body.searches[0].success, false);
++      assert.match(body.searches[0].error, /invalid SearXNG URL/);
++      assert.doesNotMatch(body.searches[0].error, /secret/);
++    } finally {
++      server.child.kill();
++    }
++  }
++});
+diff -ruN -x .git a/test/tool-call-logging.test.mjs b/test/tool-call-logging.test.mjs
+--- a/test/tool-call-logging.test.mjs	2026-11-05 05:35:18.750064479 +0000
++++ b/test/tool-call-logging.test.mjs	2026-11-05 12:34:42.561049352 +0000
+@@ -86,8 +86,9 @@
+ 
+ before(async () => {
+   child = spawn(process.execPath, [entry, '--transport=stdio'], {
+-    // Nothing listens on the discard port, every search query fails fast
+-    env: { ...process.env, SEARXNG_URL: 'http://127.0.0.1:9' },
++    // Nothing listens on the discard port, every search query fails fast; the
++    // short deadline leaves no room for a retry pause within the 10 s wait
++    env: { ...process.env, SEARXNG_URL: 'http://127.0.0.1:9', SEARXNG_DEADLINE_MS: '1000' },
+     stdio: ['pipe', 'pipe', 'pipe'],
+   });
+   createInterface({ input: child.stdout }).on('line', (line) => {
