@@ -1,0 +1,1023 @@
+diff -ruN -x .git a/.env.example b/.env.example
+--- a/.env.example	2026-11-05 15:40:48.190377024 +0000
++++ b/.env.example	2026-11-05 17:30:29.161229615 +0000
+@@ -17,6 +17,12 @@
+ # Optional: Timeout of one SearXNG request attempt, in ms (default: 5000)
+ # SEARXNG_ATTEMPT_TIMEOUT_MS=5000
+ 
++# Optional: Age after which the engine list from /config is reloaded, in ms (default: 600000)
++# SEARXNG_ENGINES_TTL_MS=600000
++
++# Optional: Minimal interval between loads of /config, in ms (default: 60000)
++# SEARXNG_ENGINES_REFRESH_MS=60000
++
+ # Optional: Transport configuration
+ # TRANSPORT=stdio
+ # HOST=0.0.0.0
+diff -ruN -x .git a/README.md b/README.md
+--- a/README.md	2026-11-05 15:40:48.194377118 +0000
++++ b/README.md	2026-11-05 17:30:14.060859139 +0000
+@@ -58,6 +58,12 @@
+ # Optional: Timeout of one SearXNG request attempt, in ms (default: 5000)
+ SEARXNG_ATTEMPT_TIMEOUT_MS=5000
+ 
++# Optional: Age after which the engine list from /config is reloaded, in ms (default: 600000)
++SEARXNG_ENGINES_TTL_MS=600000
++
++# Optional: Minimal interval between loads of /config, in ms (default: 60000)
++SEARXNG_ENGINES_REFRESH_MS=60000
++
+ # Optional: Transport configuration (can also use CLI flags)
+ TRANSPORT=stdio|http
+ HOST=0.0.0.0        # HTTP mode only
+@@ -167,8 +173,8 @@
+ #### Parameters
+ 
+ - **queries** (required): Array of search query strings to execute in parallel
+-- **engines** (optional): Specific search engines to use (e.g., "google", "bing", "duckduckgo")
+-- **categories** (optional): Search categories to filter results (e.g., "general", "images", "news")
++- **engines** (optional): Specific search engines to use (e.g., "google", "bing", "duckduckgo"); names are checked against the `/config` of the SearXNG instance, matched ignoring case, with `-` and `_` read as spaces and by engine shortcut (e.g., "ddg"), and an unknown name fails the call without a search
++- **categories** (optional): Search categories to filter results (e.g., "general", "images", "news"); names are checked against `/config` the same way, without shortcuts
+ - **safesearch** (optional): Safe search level (0=off, 1=moderate, 2=strict)
+ - **language** (optional): Search language code (e.g., "en", "zh", "es")
+ 
+@@ -251,6 +257,7 @@
+ - **Authentication errors**: Clear error messages for auth failures
+ - **API rate limiting**: Graceful degradation and error reporting
+ - **Timeout handling**: Per-attempt timeout `SEARXNG_ATTEMPT_TIMEOUT_MS` (default: 5 seconds)
++- **Unknown engines or categories**: The call fails with `isError` listing the unknown names, the enabled engines and the categories; when `/config` is unavailable and no engine list was loaded before, the search runs without the check and a warning is logged
+ 
+ ## Monitoring
+ 
+diff -ruN -x .git a/src/config/index.ts b/src/config/index.ts
+--- a/src/config/index.ts	2026-11-05 15:40:48.194377118 +0000
++++ b/src/config/index.ts	2026-11-05 17:30:29.161229615 +0000
+@@ -15,6 +15,10 @@
+     deadlineMs: number;
+     /** Timeout of one request attempt, in milliseconds */
+     attemptTimeoutMs: number;
++    /** Age after which the SearXNG engine catalog is reloaded, in milliseconds */
++    enginesTtlMs: number;
++    /** Minimal interval between loads of the engine catalog, in milliseconds */
++    enginesRefreshMs: number;
+   };
+   transport: {
+     type: "stdio" | "http";
+@@ -138,6 +142,8 @@
+   // Validate SearXNG timings: unset or empty means default
+   const deadlineMs = readMilliseconds("SEARXNG_DEADLINE_MS", 20000, [20000, 30000]);
+   const attemptTimeoutMs = readMilliseconds("SEARXNG_ATTEMPT_TIMEOUT_MS", 5000, [5000, 10000]);
++  const enginesTtlMs = readMilliseconds("SEARXNG_ENGINES_TTL_MS", 600000, [600000, 3600000]);
++  const enginesRefreshMs = readMilliseconds("SEARXNG_ENGINES_REFRESH_MS", 60000, [60000, 300000]);
+ 
+   return {
+     searxng: {
+@@ -146,6 +152,8 @@
+       concurrency,
+       deadlineMs,
+       attemptTimeoutMs,
++      enginesTtlMs,
++      enginesRefreshMs,
+     },
+     transport: {
+       type: transport,
+diff -ruN -x .git a/src/server.ts b/src/server.ts
+--- a/src/server.ts	2026-11-05 15:40:48.186376931 +0000
++++ b/src/server.ts	2026-11-05 17:30:14.060859139 +0000
+@@ -10,6 +10,7 @@
+ } from "@modelcontextprotocol/server";
+ import { searchTool, SearchToolArgs } from "./tools/index.js";
+ import { SearXNGSearchTool } from "./tools/searxng.js";
++import { SearchRejectedError } from "./services/searxng-catalog.js";
+ import { Config } from "./config/index.js";
+ import { Logger } from "./utils/logger.js";
+ 
+@@ -141,6 +142,14 @@
+ 
+       return toolResult;
+     } catch (error) {
++      // Unknown engine or category names are a tool error made of plain text
++      if (error instanceof SearchRejectedError) {
++        this.logger.info("Search rejected: unknown SearXNG names", {
++          engines: error.unknownEngines,
++          categories: error.unknownCategories,
++        });
++        return { content: [{ type: "text", text: error.message }], isError: true };
++      }
+       this.logger.error("Search execution failed", error);
+       throw new Error(
+         `Search failed: ${error instanceof Error ? error.message : "Unknown error"}`
+diff -ruN -x .git a/src/services/searxng-api.ts b/src/services/searxng-api.ts
+--- a/src/services/searxng-api.ts	2026-11-05 15:40:48.194377118 +0000
++++ b/src/services/searxng-api.ts	2026-11-05 17:29:51.356302254 +0000
+@@ -5,6 +5,7 @@
+ 
+ import { Logger } from '../utils/logger.js';
+ import { Semaphore } from '../utils/semaphore.js';
++import { SearXNGCatalog } from './searxng-catalog.js';
+ 
+ /**
+  * Valid language codes supported by SearXNG
+@@ -295,6 +296,7 @@
+   private logger?: Logger;
+   private concurrency: number;
+   private deadline: number;
++  private catalog: SearXNGCatalog;
+ 
+   constructor(
+     baseUrl: string,
+@@ -302,7 +304,9 @@
+     attemptTimeout: number = 5000,
+     logger?: Logger,
+     concurrency: number = 3,
+-    deadline: number = 20000
++    deadline: number = 20000,
++    catalogTtl: number = 600000,
++    catalogRefreshInterval: number = 60000
+   ) {
+     this.baseUrl = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
+     this.auth = auth;
+@@ -310,6 +314,12 @@
+     this.logger = logger;
+     this.concurrency = concurrency;
+     this.deadline = deadline;
++    this.catalog = new SearXNGCatalog(
++      () => this.fetchConfig(),
++      catalogTtl,
++      catalogRefreshInterval,
++      logger
++    );
+   }
+ 
+   /**
+@@ -328,6 +338,48 @@
+   }
+ 
+   /**
++   * Headers of every GET request to SearXNG
++   */
++  private requestHeaders(): Record<string, string> {
++    return {
++      "User-Agent": "SearXNG-Mul-MCP-Client/1.0.0",
++      Accept: "application/json",
++      // SearXNG translates engine error reasons into the request language;
++      // the locale cookie also overrides ui.default_locale of the instance
++      "Accept-Language": "en",
++      Cookie: "locale=en",
++      ...this.getAuthHeaders(),
++    };
++  }
++
++  /**
++   * Fetch the /config JSON of SearXNG in one attempt limited by the attempt
++   * timeout, which also covers reading the body
++   */
++  private async fetchConfig(): Promise<unknown> {
++    const url = `${this.baseUrl}/config`;
++    // fetch echoes the URL in its errors, which are logged, and the URL may
++    // carry credentials, so such URLs fail before fetch
++    if (!URL.canParse(url)) {
++      throw new Error("invalid SearXNG URL");
++    }
++    const parsed = new URL(url);
++    if (parsed.username || parsed.password) {
++      throw new Error("invalid SearXNG URL: credentials belong in USERNAME and PASSWORD");
++    }
++    const response = await fetch(url, {
++      method: "GET",
++      headers: this.requestHeaders(),
++      signal: AbortSignal.timeout(this.attemptTimeout),
++    });
++    if (!response.ok) {
++      await response.body?.cancel().catch(() => undefined);
++      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
++    }
++    return await response.json();
++  }
++
++  /**
+    * Build a failed query result with the query in the error message
+    */
+   private failure(query: string, message: string): QueryResult {
+@@ -401,15 +453,7 @@
+ 
+       const response = await fetch(url, {
+         method: "GET",
+-        headers: {
+-          "User-Agent": "SearXNG-Mul-MCP-Client/1.0.0",
+-          Accept: "application/json",
+-          // SearXNG translates engine error reasons into the request language;
+-          // the locale cookie also overrides ui.default_locale of the instance
+-          "Accept-Language": "en",
+-          Cookie: "locale=en",
+-          ...this.getAuthHeaders(),
+-        },
++        headers: this.requestHeaders(),
+         signal: AbortSignal.any([controller.signal, deadlineSignal]),
+       });
+ 
+@@ -570,11 +614,14 @@
+     const limiter = new Semaphore(this.concurrency);
+     const deadlineAt = Date.now() + this.deadline;
+     const deadlineSignal = AbortSignal.timeout(this.deadline);
++    // Names are checked within the deadline, unknown ones reject the call
++    const names = await this.catalog.resolve(options?.engines, options?.categories, deadlineSignal);
++    const searchOptions = names ? { ...options, ...names } : options;
+     const searchTasks = queries.map(async (query) => {
+       try {
+         return await this.searchWithRetries(
+           query,
+-          options,
++          searchOptions,
+           limiter,
+           deadlineAt,
+           deadlineSignal
+diff -ruN -x .git a/src/services/searxng-catalog.ts b/src/services/searxng-catalog.ts
+--- a/src/services/searxng-catalog.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/services/searxng-catalog.ts	2026-11-05 19:40:02.716965009 +0000
+@@ -0,0 +1,348 @@
++/**
++ * Catalog of SearXNG engines and categories from the /config endpoint
++ * SearXNG silently drops unknown engine and category names, so the names of
++ * a search call are checked and normalized against the catalog beforehand
++ */
++
++import { Logger } from '../utils/logger.js';
++
++/**
++ * Engine entry of the /config response
++ */
++interface CatalogEngine {
++  name: string;
++  /** Shortcut of the engine, NO_SHORTCUT when it has none */
++  shortcut: string;
++  /** Whether the engine is enabled by default; disabled ones still search when named */
++  enabled: boolean;
++}
++
++/**
++ * Engines and categories of the SearXNG instance
++ */
++interface Catalog {
++  engines: CatalogEngine[];
++  categories: string[];
++  /** Time of the load, in milliseconds since the epoch */
++  loadedAt: number;
++}
++
++/**
++ * Names of one kind resolved against the catalog
++ */
++interface Resolution {
++  /** Canonical names in the order of the call, without duplicates */
++  names: string[];
++  /** Quoted names that match nothing or more than one entry */
++  unknown: string[];
++}
++
++/**
++ * Engine and category names checked against the catalog; a kind absent from
++ * the call stays absent
++ */
++export interface ResolvedNames {
++  engines?: string[];
++  categories?: string[];
++}
++
++/** Shortcut SearXNG reports for an engine without one */
++const NO_SHORTCUT = "-";
++
++/**
++ * A search call refused before any request because of unknown engine or
++ * category names; the message is the text of the tool result
++ */
++export class SearchRejectedError extends Error {
++  readonly unknownEngines: string[];
++  readonly unknownCategories: string[];
++
++  constructor(message: string, unknownEngines: string[], unknownCategories: string[]) {
++    super(message);
++    this.name = "SearchRejectedError";
++    this.unknownEngines = unknownEngines;
++    this.unknownCategories = unknownCategories;
++  }
++}
++
++/**
++ * Parse the /config response, skipping malformed engine entries; a response
++ * without the engines or categories array is invalid
++ */
++function parseCatalog(data: unknown): Catalog {
++  const config = data as { engines?: unknown; categories?: unknown } | null;
++  if (
++    !config ||
++    typeof config !== "object" ||
++    !Array.isArray(config.engines) ||
++    !Array.isArray(config.categories)
++  ) {
++    throw new Error("invalid response: engines or categories is not an array");
++  }
++  const engines: CatalogEngine[] = [];
++  for (const entry of config.engines) {
++    const engine = entry as { name?: unknown; shortcut?: unknown; enabled?: unknown } | null;
++    if (!engine || typeof engine !== "object" || typeof engine.name !== "string") {
++      continue;
++    }
++    engines.push({
++      name: engine.name,
++      shortcut: typeof engine.shortcut === "string" ? engine.shortcut : NO_SHORTCUT,
++      enabled: engine.enabled !== false,
++    });
++  }
++  const categories = config.categories.filter(
++    (category): category is string => typeof category === "string"
++  );
++  return { engines, categories, loadedAt: Date.now() };
++}
++
++/**
++ * Find the entries matched by the first step that matches anything: the
++ * trimmed name exactly, ignoring case, with "-" and "_" read as spaces like
++ * SearXNG bangs, then a shortcut ignoring case; an empty name matches nothing
++ */
++function matchName(value: string, names: string[], shortcuts: Array<[string, string]>): string[] {
++  const trimmed = value.trim();
++  if (!trimmed) {
++    return [];
++  }
++  const lower = trimmed.toLowerCase();
++  const spaced = lower.replace(/[-_]/g, " ");
++  const steps = [
++    () => names.filter((name) => name === trimmed),
++    () => names.filter((name) => name.toLowerCase() === lower),
++    () => names.filter((name) => name.toLowerCase() === spaced),
++    () => shortcuts.filter(([shortcut]) => shortcut.toLowerCase() === lower).map(([, name]) => name),
++  ];
++  for (const step of steps) {
++    const found = step();
++    if (found.length) {
++      return found;
++    }
++  }
++  return [];
++}
++
++/**
++ * SearXNG catalog shared by all sessions of the process: loaded by the first
++ * call with names, reloaded after the TTL and when a name is unknown, at most
++ * once per refresh interval
++ */
++export class SearXNGCatalog {
++  private loadConfig: () => Promise<unknown>;
++  private ttl: number;
++  private refreshInterval: number;
++  private logger?: Logger;
++  /** Last loaded catalog, kept when a later load fails */
++  private catalog?: Catalog;
++  /** Load in flight, shared by every caller */
++  private loading?: Promise<void>;
++  /** Start of the last load, successful or not */
++  private lastAttemptAt?: number;
++
++  constructor(
++    loadConfig: () => Promise<unknown>,
++    ttl: number,
++    refreshInterval: number,
++    logger?: Logger
++  ) {
++    this.loadConfig = loadConfig;
++    this.ttl = ttl;
++    this.refreshInterval = refreshInterval;
++    this.logger = logger;
++  }
++
++  /**
++   * Check and normalize the names of a search call. Returns undefined when
++   * the call has no names or no catalog could be loaded, then the names go
++   * to SearXNG unchanged; throws SearchRejectedError on unknown names
++   */
++  async resolve(
++    engines: string[] | undefined,
++    categories: string[] | undefined,
++    deadlineSignal: AbortSignal
++  ): Promise<ResolvedNames | undefined> {
++    const engineNames = engines?.length ? engines : undefined;
++    const categoryNames = categories?.length ? categories : undefined;
++    if (!engineNames && !categoryNames) {
++      return undefined;
++    }
++    const expired = !this.isFresh();
++    if (expired) {
++      await this.refresh(deadlineSignal);
++    }
++    let resolved = this.match(engineNames, categoryNames);
++    // A name unknown to the catalog may belong to an engine added since then;
++    // a call reloads at most once, so a failed reload falls back to the old list
++    const unknown = resolved?.engines?.unknown.length || resolved?.categories?.unknown.length;
++    if (!expired && resolved && unknown) {
++      await this.refresh(deadlineSignal);
++      resolved = this.match(engineNames, categoryNames);
++    }
++    // A load cut short by the deadline decides nothing: the search then fails
++    // with the deadline instead of rejecting names by an outdated catalog
++    if (deadlineSignal.aborted) {
++      return undefined;
++    }
++    if (!this.catalog || !resolved) {
++      this.logger?.warn(`Searching without SearXNG name validation: /config is unavailable`, {
++        engines: engineNames,
++        categories: categoryNames,
++      });
++      return undefined;
++    }
++    if (resolved.engines?.unknown.length || resolved.categories?.unknown.length) {
++      throw this.rejection(this.catalog, resolved.engines, resolved.categories);
++    }
++    return {
++      ...(resolved.engines ? { engines: resolved.engines.names } : {}),
++      ...(resolved.categories ? { categories: resolved.categories.names } : {}),
++    };
++  }
++
++  /**
++   * Whether the catalog is loaded and younger than the TTL
++   */
++  private isFresh(): boolean {
++    return this.catalog !== undefined && Date.now() - this.catalog.loadedAt < this.ttl;
++  }
++
++  /**
++   * Join the load in flight or start a new one when the refresh interval
++   * allows it, then wait for it but not past the call deadline
++   */
++  private async refresh(deadlineSignal: AbortSignal): Promise<void> {
++    if (!this.loading) {
++      const allowed =
++        this.lastAttemptAt === undefined ||
++        Date.now() - this.lastAttemptAt >= this.refreshInterval;
++      if (!allowed) {
++        return;
++      }
++      this.loading = this.load();
++    }
++    const loading = this.loading;
++    await new Promise<void>((resolve) => {
++      if (deadlineSignal.aborted) {
++        resolve();
++        return;
++      }
++      const onAbort = () => resolve();
++      deadlineSignal.addEventListener("abort", onAbort, { once: true });
++      void loading.then(() => {
++        deadlineSignal.removeEventListener("abort", onAbort);
++        resolve();
++      });
++    });
++  }
++
++  /**
++   * Load the catalog once; never rejects, a failure keeps the previous
++   * catalog and is logged as a warning
++   */
++  private async load(): Promise<void> {
++    this.lastAttemptAt = Date.now();
++    try {
++      this.catalog = parseCatalog(await this.loadConfig());
++      this.logger?.debug(`Loaded SearXNG /config`, {
++        engines: this.catalog.engines.length,
++        categories: this.catalog.categories.length,
++      });
++    } catch (error) {
++      this.logger?.warn(`Failed to load SearXNG /config`, {
++        reason: error instanceof Error ? error.message : String(error),
++      });
++    } finally {
++      this.loading = undefined;
++    }
++  }
++
++  /**
++   * Resolve the names of the call against the current catalog, undefined
++   * without a catalog
++   */
++  private match(
++    engines: string[] | undefined,
++    categories: string[] | undefined
++  ): { engines?: Resolution; categories?: Resolution } | undefined {
++    if (!this.catalog) {
++      return undefined;
++    }
++    const engineNames = this.catalog.engines.map((engine) => engine.name);
++    const shortcuts = this.catalog.engines
++      .filter((engine) => engine.shortcut && engine.shortcut !== NO_SHORTCUT)
++      .map((engine): [string, string] => [engine.shortcut, engine.name]);
++    return {
++      ...(engines ? { engines: this.resolveNames("engine", engines, engineNames, shortcuts) } : {}),
++      ...(categories
++        ? { categories: this.resolveNames("category", categories, this.catalog.categories, []) }
++        : {}),
++    };
++  }
++
++  /**
++   * Resolve names of one kind, logging every name changed by normalization
++   */
++  private resolveNames(
++    kind: string,
++    values: string[],
++    names: string[],
++    shortcuts: Array<[string, string]>
++  ): Resolution {
++    const resolution: Resolution = { names: [], unknown: [] };
++    for (const value of values) {
++      const found = matchName(value, names, shortcuts);
++      if (found.length === 1) {
++        if (found[0] !== value) {
++          this.logger?.debug(`Normalized SearXNG ${kind} name`, { from: value, to: found[0] });
++        }
++        if (!resolution.names.includes(found[0])) {
++          resolution.names.push(found[0]);
++        }
++        continue;
++      }
++      const quoted =
++        found.length > 1
++          ? `${JSON.stringify(value)} (matches ${found.map((name) => JSON.stringify(name)).join(", ")})`
++          : JSON.stringify(value);
++      if (!resolution.unknown.includes(quoted)) {
++        resolution.unknown.push(quoted);
++      }
++    }
++    return resolution;
++  }
++
++  /**
++   * Build the error listing unknown names with the enabled engines and all
++   * categories of the instance
++   */
++  private rejection(
++    catalog: Catalog,
++    engines: Resolution | undefined,
++    categories: Resolution | undefined
++  ): SearchRejectedError {
++    const lines: string[] = [];
++    const unknownEngines = engines?.unknown ?? [];
++    const unknownCategories = categories?.unknown ?? [];
++    if (unknownEngines.length) {
++      const enabled = catalog.engines
++        .filter((engine) => engine.enabled)
++        .map((engine) => engine.name)
++        .sort();
++      const disabled = catalog.engines.length - enabled.length;
++      lines.push(`Unknown SearXNG engines: ${unknownEngines.join(", ")}.`);
++      lines.push(`Enabled engines: ${enabled.length ? enabled.join(", ") : "none"}.`);
++      if (disabled > 0) {
++        lines.push(`Engines disabled by default, accepted as well: ${disabled}.`);
++      }
++    }
++    if (unknownCategories.length) {
++      const all = [...catalog.categories].sort();
++      lines.push(`Unknown SearXNG categories: ${unknownCategories.join(", ")}.`);
++      lines.push(`Categories: ${all.length ? all.join(", ") : "none"}.`);
++    }
++    lines.push("No search was made.");
++    return new SearchRejectedError(lines.join("\n"), unknownEngines, unknownCategories);
++  }
++}
+diff -ruN -x .git a/src/tools/searxng.ts b/src/tools/searxng.ts
+--- a/src/tools/searxng.ts	2026-11-05 15:40:48.194377118 +0000
++++ b/src/tools/searxng.ts	2026-11-05 17:30:29.161229615 +0000
+@@ -9,6 +9,7 @@
+   MultiSearchResult,
+   UnresponsiveEngine,
+ } from '../services/searxng-api.js';
++import { SearchRejectedError } from '../services/searxng-catalog.js';
+ import { Config } from '../config/index.js';
+ import { Logger } from '../utils/logger.js';
+ 
+@@ -72,7 +73,9 @@
+       config.searxng.attemptTimeoutMs,
+       logger,
+       config.searxng.concurrency,
+-      config.searxng.deadlineMs
++      config.searxng.deadlineMs,
++      config.searxng.enginesTtlMs,
++      config.searxng.enginesRefreshMs
+     );
+   }
+ 
+@@ -97,6 +100,9 @@
+       const multiResult = await this.apiClient.search(queries, options);
+       return this.formatResponse(multiResult);
+     } catch (error) {
++      if (error instanceof SearchRejectedError) {
++        throw error;
++      }
+       throw new Error(`Search execution failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+     }
+   }
+diff -ruN -x .git a/test/engine-validation.test.mjs b/test/engine-validation.test.mjs
+--- a/test/engine-validation.test.mjs	1970-01-01 00:00:00.000000000 +0000
++++ b/test/engine-validation.test.mjs	2026-11-05 20:49:33.828799138 +0000
+@@ -0,0 +1,401 @@
++/**
++ * Regression tests for the check of engine and category names against the
++ * SearXNG /config catalog
++ * Run after the build: node --test test/engine-validation.test.mjs
++ * MCP_SERVER_ENTRY overrides the server entry point (default: build/index.js)
++ */
++
++import { test, after } from 'node:test';
++import assert from 'node:assert/strict';
++import { spawn } from 'node:child_process';
++import { createServer } from 'node:http';
++import { createInterface } from 'node:readline';
++import { fileURLToPath } from 'node:url';
++
++const entry =
++  process.env.MCP_SERVER_ENTRY ||
++  fileURLToPath(new URL('../build/index.js', import.meta.url));
++const item = { url: 'https://example.com/', title: 'Example', content: 'Example page' };
++const catalog = {
++  categories: ['general', 'images', 'social media'],
++  engines: [
++    { name: 'google', shortcut: 'go', enabled: true },
++    { name: 'duckduckgo', shortcut: 'ddg', enabled: true },
++    { name: 'bing images', shortcut: 'bii', enabled: true },
++    { name: 'bing', shortcut: 'bi', enabled: false },
++    { name: 'wikipedia', shortcut: 'wp', enabled: true },
++    { name: 'alpha', shortcut: 'qq', enabled: true },
++    { name: 'beta', shortcut: 'QQ', enabled: true },
++    { name: 'go', shortcut: '-', enabled: true },
++  ],
++};
++const enabledList =
++  'Enabled engines: alpha, beta, bing images, duckduckgo, go, google, wikipedia.';
++const started = [];
++
++/**
++ * Wait the given number of milliseconds
++ */
++function sleep(ms) {
++  return new Promise((resolve) => setTimeout(resolve, ms));
++}
++
++/**
++ * Start a SearXNG stub and an MCP server over stdio using it. The stub
++ * answers /config with `stub.catalog` according to `stub.mode` (ok, error,
++ * invalid, slow, hang) and counts these requests; /search records engines
++ * and categories by query. `searxngUrl` builds SEARXNG_URL from the port
++ */
++async function setup(env = {}, searxngUrl = (port) => `http://127.0.0.1:${port}`) {
++  const stub = {
++    mode: 'ok',
++    catalog: structuredClone(catalog),
++    configRequests: 0,
++    searches: new Map(),
++  };
++  const http = createServer((req, res) => {
++    if (req.method === 'HEAD') {
++      res.end();
++      return;
++    }
++    const url = new URL(req.url, 'http://stub');
++    if (url.pathname === '/config') {
++      stub.configRequests++;
++      if (stub.mode === 'error') {
++        res.writeHead(500);
++        res.end('boom');
++        return;
++      }
++      if (stub.mode === 'hang') {
++        return;
++      }
++      res.writeHead(200, { 'Content-Type': 'application/json' });
++      if (stub.mode === 'invalid') {
++        res.end('{not json');
++        return;
++      }
++      const delay = stub.mode === 'slow' ? 300 : 0;
++      const body = JSON.stringify(stub.catalog);
++      setTimeout(() => res.end(body), delay);
++      return;
++    }
++    stub.searches.set(url.searchParams.get('q'), {
++      engines: url.searchParams.get('engines'),
++      categories: url.searchParams.get('categories'),
++    });
++    res.writeHead(200, { 'Content-Type': 'application/json' });
++    res.end(JSON.stringify({ query: 'q', results: [item], unresponsive_engines: [] }));
++  });
++  await new Promise((resolve, reject) => {
++    http.once('error', reject);
++    http.listen(0, '127.0.0.1', resolve);
++  });
++  const child = spawn(process.execPath, [entry, '--transport=stdio'], {
++    env: {
++      ...process.env,
++      SEARXNG_URL: searxngUrl(http.address().port),
++      ...env,
++    },
++    stdio: ['pipe', 'pipe', 'pipe'],
++  });
++  started.push({ http, child });
++  const logs = [];
++  createInterface({ input: child.stderr }).on('line', (line) => logs.push(line));
++  const pending = new Map();
++  let nextId = 1;
++  createInterface({ input: child.stdout }).on('line', (line) => {
++    const message = JSON.parse(line);
++    pending.get(message.id)?.(message);
++    pending.delete(message.id);
++  });
++  const request = (method, params) => {
++    const id = nextId++;
++    return new Promise((resolve, reject) => {
++      const timer = setTimeout(() => {
++        pending.delete(id);
++        reject(new Error(`No response to ${method} within 10 s`));
++      }, 10000);
++      pending.set(id, (message) => {
++        clearTimeout(timer);
++        resolve(message);
++      });
++      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
++    });
++  };
++  const init = await request('initialize', {
++    protocolVersion: '2025-03-26',
++    capabilities: {},
++    clientInfo: { name: 'engine-validation-test', version: '1.0.0' },
++  });
++  assert.ok(init.result, 'initialize must succeed');
++  const initialized = { jsonrpc: '2.0', method: 'notifications/initialized' };
++  child.stdin.write(`${JSON.stringify(initialized)}\n`);
++  return { stub, request, logs };
++}
++
++/**
++ * Call the search tool with one query and the given filters
++ */
++async function search(server, query, filters = {}) {
++  const response = await server.request('tools/call', {
++    name: 'search',
++    arguments: { queries: [query], ...filters },
++  });
++  assert.equal(response.error, undefined, 'tool result expected, not a JSON-RPC error');
++  return { isError: response.result.isError === true, text: response.result.content[0].text };
++}
++
++/**
++ * Check that the call failed before any request to /search
++ */
++async function assertRejected(server, query, filters, ...lines) {
++  const { isError, text } = await search(server, query, filters);
++  assert.equal(isError, true, text);
++  for (const line of lines) {
++    assert.ok(text.split('\n').includes(line), `line "${line}" expected in:\n${text}`);
++  }
++  assert.ok(text.endsWith('No search was made.'), text);
++  assert.equal(server.stub.searches.has(query), false, 'no search request expected');
++}
++
++/**
++ * Check that the call searched and return the filters SearXNG received
++ */
++async function assertSearched(server, query, filters) {
++  const { isError, text } = await search(server, query, filters);
++  assert.equal(isError, false, text);
++  assert.equal(JSON.parse(text).searches[0].success, true, text);
++  assert.ok(server.stub.searches.has(query), 'search request expected');
++  return server.stub.searches.get(query);
++}
++
++/**
++ * Count WARN lines containing the text, waiting for at least `count` of
++ * them: stderr is a separate pipe and may lag behind the response
++ */
++async function waitWarnings(server, text, count) {
++  const matching = () =>
++    server.logs.filter((line) => line.startsWith('[WARN] ') && line.includes(text)).length;
++  for (let i = 0; i < 50 && matching() < count; i++) {
++    await sleep(20);
++  }
++  return matching();
++}
++
++after(async () => {
++  for (const { http, child } of started) {
++    child.kill();
++    http.closeAllConnections();
++    await new Promise((resolve) => http.close(resolve));
++  }
++});
++
++test('names are checked once per TTL and normalized', async (t) => {
++  const server = await setup();
++
++  await t.test('a call without filters does not load /config', async () => {
++    await assertSearched(server, 'plain');
++    assert.equal(server.stub.configRequests, 0);
++  });
++
++  await t.test('an unknown engine fails the call without a search', async () => {
++    await assertRejected(
++      server,
++      'unknown',
++      { engines: ['no_such_engine'] },
++      'Unknown SearXNG engines: "no_such_engine".',
++      enabledList,
++      'Engines disabled by default, accepted as well: 1.'
++    );
++    assert.equal(server.stub.configRequests, 1, 'the refresh interval blocks a second load');
++  });
++
++  await t.test('a known and an unknown engine fail the call', async () => {
++    await assertRejected(
++      server,
++      'mixed',
++      { engines: ['wikipedia', 'no_such_engine'] },
++      'Unknown SearXNG engines: "no_such_engine".'
++    );
++  });
++
++  await t.test('known engines, also disabled by default, are searched', async () => {
++    const sent = await assertSearched(server, 'known', { engines: ['wikipedia', 'bing'] });
++    assert.equal(sent.engines, 'wikipedia,bing');
++  });
++
++  await t.test('names are normalized and deduplicated', async () => {
++    const engines = [' Google ', 'DDG', 'bing_images', 'BING-IMAGES', 'google'];
++    const sent = await assertSearched(server, 'normalized', { engines });
++    assert.equal(sent.engines, 'google,duckduckgo,bing images');
++  });
++
++  await t.test('an engine name wins over a shortcut of another engine', async () => {
++    const sent = await assertSearched(server, 'name-first', { engines: ['GO', 'go'] });
++    assert.equal(sent.engines, 'go');
++  });
++
++  await t.test('an ambiguous, empty or "-" name fails the call', async () => {
++    await assertRejected(
++      server,
++      'ambiguous',
++      { engines: ['Qq', ' ', '-'] },
++      'Unknown SearXNG engines: "Qq" (matches "alpha", "beta"), " ", "-".'
++    );
++  });
++
++  await t.test('categories are checked and normalized', async () => {
++    const sent = await assertSearched(server, 'categories', {
++      categories: ['Social_Media', 'images', 'IMAGES'],
++    });
++    assert.equal(sent.categories, 'social media,images');
++    assert.equal(sent.engines, null);
++    await assertRejected(
++      server,
++      'bad-category',
++      { engines: ['nope'], categories: ['general', 'nothing'] },
++      'Unknown SearXNG engines: "nope".',
++      enabledList,
++      'Unknown SearXNG categories: "nothing".',
++      'Categories: general, images, social media.'
++    );
++  });
++
++  await t.test('the catalog stays cached within the TTL', async () => {
++    assert.equal(server.stub.configRequests, 1);
++  });
++});
++
++test('reloads follow the TTL and the refresh interval', async () => {
++  const server = await setup({
++    SEARXNG_ENGINES_TTL_MS: '2000',
++    SEARXNG_ENGINES_REFRESH_MS: '700',
++  });
++  await assertSearched(server, 'first', { engines: ['google'] });
++  assert.equal(server.stub.configRequests, 1);
++  server.stub.catalog.engines.push({ name: 'later', shortcut: '-', enabled: true });
++  await assertRejected(server, 'early', { engines: ['later'] });
++  assert.equal(server.stub.configRequests, 1, 'no reload within the refresh interval');
++  await sleep(800);
++  const sent = await assertSearched(server, 'added', { engines: ['later'] });
++  assert.equal(sent.engines, 'later', 'an unknown name reloads the catalog');
++  assert.equal(server.stub.configRequests, 2);
++  for (const query of ['typo-1', 'typo-2', 'typo-3']) {
++    await assertRejected(server, query, { engines: ['nope'] });
++  }
++  assert.equal(server.stub.configRequests, 2, 'one reload for a series of unknown names');
++  await assertSearched(server, 'cached', { engines: ['google'] });
++  assert.equal(server.stub.configRequests, 2);
++  await sleep(2100);
++  await assertSearched(server, 'expired', { engines: ['google'] });
++  assert.equal(server.stub.configRequests, 3, 'reload after the TTL');
++});
++
++test('a reload cut by the deadline fails the call with the deadline', async () => {
++  const server = await setup({ SEARXNG_ENGINES_REFRESH_MS: '300', SEARXNG_DEADLINE_MS: '1000' });
++  await assertSearched(server, 'before', { engines: ['google'] });
++  server.stub.catalog.engines.push({ name: 'later', shortcut: '-', enabled: true });
++  server.stub.mode = 'hang';
++  await sleep(400);
++  const { isError, text } = await search(server, 'cut', { engines: ['later'] });
++  assert.equal(isError, true, text);
++  assert.ok(text.includes('deadline of 1000 ms exceeded'), text);
++  assert.ok(!text.includes('Unknown SearXNG'), text);
++  assert.equal(server.stub.configRequests, 2);
++  assert.equal(server.stub.searches.has('cut'), false, 'no search request expected');
++});
++
++test('a call reloads an expired catalog at most once', async (t) => {
++  // A hanging reload times out quickly; a slow one (300 ms) has ample time to finish
++  const env = (mode) => ({
++    SEARXNG_ENGINES_TTL_MS: '300',
++    SEARXNG_ENGINES_REFRESH_MS: '100',
++    SEARXNG_ATTEMPT_TIMEOUT_MS: mode === 'slow' ? '1500' : '500',
++    SEARXNG_DEADLINE_MS: '3000',
++  });
++  // Names "later" exist only in the reloaded catalog: the old one rejects them
++  const engines = { engines: ['later', 'nope'] };
++  const categories = { categories: ['later', 'nothing'] };
++  const oldEngines = 'Unknown SearXNG engines: "later", "nope".';
++  const oldCategories = 'Unknown SearXNG categories: "later", "nothing".';
++  const cases = [
++    // The reload of the expired catalog times out, the old list rejects the names
++    ['a timed out reload', 'hang', engines, oldEngines],
++    ['a timed out reload', 'hang', categories, oldCategories],
++    // The reload outlasts the refresh interval, the new list rejects the name
++    ['a slow reload', 'slow', engines, 'Unknown SearXNG engines: "nope".'],
++    ['a slow reload', 'slow', categories, 'Unknown SearXNG categories: "nothing".'],
++  ];
++  for (const [name, mode, filters, line] of cases) {
++    await t.test(`${name} of ${Object.keys(filters)[0]}`, async () => {
++      const server = await setup(env(mode));
++      await assertSearched(server, 'fresh', { engines: ['google'] });
++      server.stub.catalog.engines.push({ name: 'later', shortcut: '-', enabled: true });
++      server.stub.catalog.categories.push('later');
++      server.stub.mode = mode;
++      await sleep(400);
++      await assertRejected(server, 'once', filters, line);
++      assert.equal(server.stub.configRequests, 2, 'no second reload for the unknown name');
++    });
++  }
++});
++
++test('concurrent calls share one load of /config', async () => {
++  const server = await setup();
++  server.stub.mode = 'slow';
++  // Every call waits for the load: names are normalized and unknown ones rejected
++  const queries = ['shared-1', 'shared-2', 'shared-3'];
++  const searched = queries.map((query) => assertSearched(server, query, { engines: ['DDG'] }));
++  const rejected = assertRejected(server, 'shared-unknown', { engines: ['no_such_engine'] });
++  for (const sent of await Promise.all(searched)) {
++    assert.equal(sent.engines, 'duckduckgo');
++  }
++  await rejected;
++  assert.equal(server.stub.configRequests, 1);
++});
++
++test('a failed reload keeps checking against the last catalog', async () => {
++  const server = await setup({ SEARXNG_ENGINES_TTL_MS: '300', SEARXNG_ENGINES_REFRESH_MS: '300' });
++  await assertSearched(server, 'loaded', { engines: ['google'] });
++  server.stub.mode = 'error';
++  await sleep(400);
++  await assertRejected(server, 'stale-unknown', { engines: ['no_such_engine'] });
++  assert.equal(server.stub.configRequests, 2, 'the expired catalog is reloaded');
++  assert.equal(await waitWarnings(server, 'Failed to load SearXNG /config', 1), 1);
++  const sent = await assertSearched(server, 'stale-known', { engines: ['Wikipedia'] });
++  assert.equal(sent.engines, 'wikipedia');
++});
++
++test('without a catalog the search runs unchecked with a warning', async () => {
++  const server = await setup({ SEARXNG_ENGINES_REFRESH_MS: '300' });
++  server.stub.mode = 'error';
++  const sent = await assertSearched(server, 'unchecked', { engines: ['no_such_engine'] });
++  assert.equal(sent.engines, 'no_such_engine');
++  assert.equal(await waitWarnings(server, 'Failed to load SearXNG /config', 1), 1);
++  assert.equal(await waitWarnings(server, 'Searching without SearXNG name validation', 1), 1);
++  server.stub.mode = 'invalid';
++  await sleep(400);
++  await assertSearched(server, 'invalid', { engines: ['no_such_engine'] });
++  assert.equal(server.stub.configRequests, 2);
++  assert.equal(await waitWarnings(server, 'Failed to load SearXNG /config', 2), 2);
++  assert.equal(await waitWarnings(server, 'Searching without SearXNG name validation', 2), 2);
++});
++
++test('credentials in SEARXNG_URL stay out of the /config warning', async (t) => {
++  // The search itself fails on such URLs, the deadline keeps the call short
++  const cases = [
++    ['a valid URL', (port) => `http://user:secret@127.0.0.1:${port}`, 'URL: credentials belong'],
++    ['a URL broken by /config', (port) => `http://user:secret@127.0.0.1:${port} `, 'URL"'],
++  ];
++  for (const [name, searxngUrl, reason] of cases) {
++    await t.test(name, async () => {
++      const server = await setup({ SEARXNG_DEADLINE_MS: '1000' }, searxngUrl);
++      await search(server, 'credentials', { engines: ['google'] });
++      assert.equal(await waitWarnings(server, 'Failed to load SearXNG /config', 1), 1);
++      const warning = server.logs.find((line) => line.includes('Failed to load SearXNG /config'));
++      assert.ok(warning.includes(`invalid SearXNG ${reason}`), warning);
++      assert.ok(!warning.includes('secret'), warning);
++      assert.equal(server.stub.configRequests, 0);
++    });
++  }
++});
