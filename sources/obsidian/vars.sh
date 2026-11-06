@@ -2,7 +2,7 @@
 set -ueo pipefail
 # shellcheck disable=2034
 {
-  IMAGE_VER='001'
+  IMAGE_VER='002'
   IMAGE_TEST='../../_shared/test/systemd/test.sh'
   SHARED_ASSETS=(
     '_shared/install/systemd-docker/:_shared/install/systemd-docker'

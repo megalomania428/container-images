@@ -2,7 +2,7 @@
 set -ueo pipefail
 # shellcheck disable=2034
 {
-  IMAGE_VER='001'
+  IMAGE_VER='002'
   SHARED_ASSETS=(
     '_shared/install/coder.sh:_shared/install/coder.sh'
     '_shared/install/profile.sh:_shared/install/profile.sh'
