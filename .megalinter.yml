@@ -50,7 +50,8 @@ REPOSITORY_DEVSKIM_ARGUMENTS:
   - "text"
 SPELL_LYCHEE_CONFIG_FILE: ".lychee.toml"
 REPOSITORY_KINGFISHER_ARGUMENTS: "--exclude .git --exclude '**/patches/*.patch'"
-SPELL_PROSELINT_FILTER_REGEX_EXCLUDE: '\.github\/|AGENTS\.md'
+SPELL_PROSELINT_FILTER_REGEX_EXCLUDE: '\.github\/|AGENTS\.md|\
+  sources\/vibeco-debian13\/README\.md'
 REPOSITORY_BETTERLEAKS_ARGUMENTS:
   - "--config"
   - ".betterleaks.toml"

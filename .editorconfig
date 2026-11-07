@@ -17,7 +17,7 @@ max_line_length = 144
 [_shared/install/ansible/configure.sh]
 max_line_length = 222
 
-[{**.{md,crl,gpg,json},**/Dockerfile,sources/*/patches/**}]
+[{**.{md,crl,gpg,json},**/Dockerfile,**/*.Dockerfile,sources/*/patches/**}]
 indent_style = unset
 max_line_length = unset
 trim_trailing_whitespace = unset
