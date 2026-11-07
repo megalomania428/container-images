@@ -6,9 +6,10 @@ ENV LANG='en_US.UTF-8'
 ENV LC_TIME='en_GB.UTF-8'
 ENV LANGUAGE='en_US.UTF-8'
 COPY _shared /files/shared
-RUN SKIP_CLEANUP=1 /files/shared/install/systemd-docker/install.sh
-RUN /files/shared/install/coder.sh
+# One layer: coder.sh removes the SSH host keys and machine ID created by install.sh
+RUN SKIP_CLEANUP=1 /files/shared/install/systemd-docker/install.sh && \
+  CODER_SYSTEMD=1 /files/shared/install/coder.sh
 STOPSIGNAL SIGRTMIN+3
 ENTRYPOINT []
 CMD ["/sbin/init"]
-VOLUME ["/srv/data/podman/main", "/home/coder"]
+VOLUME ["/srv/data/podman/coder", "/home/coder", "/var/lib/host-identity"]
