@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2016
-# cspell:ignore truename
+# cspell:ignore readenv truename
 set -ueo pipefail
 [[ $# -eq 1 ]] || {
   echo "usage: $0 IMAGE" >&2
@@ -177,6 +177,9 @@ for map in subuid subgid; do
   echo "root:${root_start}:${root_count}" >>"${work}/${map}"
   chmod 644 "${work}/${map}"
 done
+bash "${script_dir}/session-env.sh" fixture >"${work}/session.env"
+: >"${work}/session-empty.env"
+chmod 644 "${work}/session.env" "${work}/session-empty.env"
 devices=(--device=/dev/fuse)
 for device in /dev/kvm /dev/net/tun; do
   if [[ -r ${device} && -w ${device} ]]; then
@@ -201,9 +204,12 @@ journal_forwarded() {
   echo "outer init journal forwarding failed: ${marker}" >&2
   return 1
 }
+# Starts the outer container with identity volume $1 and extra podman run options.
 start_outer() {
+  local identity="$1"
   local ready=0
   local publish_address=127.0.0.1::22 # DevSkim: ignore DS162092
+  shift
   podman --runtime=crun --cgroup-manager=systemd run -d --name "${container}" \
     --hostname=coding-outer --network=pasta --ipc=private --publish "${publish_address}" \
     --cap-drop=SYS_ADMIN --cap-drop=NET_ADMIN --group-add=keep-groups \
@@ -213,7 +219,7 @@ start_outer() {
     --volume "${store_volume}:/srv/data/podman/coder" \
     --volume "${root_store_volume}:/var/lib/containers" \
     --volume "${work}/subuid:/etc/subuid:ro" --volume "${work}/subgid:/etc/subgid:ro" \
-    --volume "$1:/var/lib/host-identity" "${devices[@]}" "${image}"
+    --volume "${identity}:/var/lib/host-identity" "${devices[@]}" "$@" "${image}"
   for _ in {1..60}; do
     if podman exec "${container}" systemctl is-active --quiet user@1000.service; then
       ready=1
@@ -277,6 +283,26 @@ coder() {
     --env CODING_TEST_REQUIRE_DEVICES="${CODING_TEST_REQUIRE_DEVICES:-0}" \
     --env CODING_TEST_KEEP_LOGS="${CODING_TEST_KEEP_LOGS:-0}" \
     --env CODING_TEST_LOG_DIR="${runtime_logs}/coder" "${container}" "$@"
+}
+session_env() {
+  podman exec "${container}" bash /run/coding-session-env.sh "$@"
+}
+session_env_setup() {
+  podman exec -i "${container}" sh -ec 'cat >/run/coding-session-env.sh' \
+    <"${script_dir}/session-env.sh"
+  session_env prepare
+}
+# Saves the environments of all compared entry points under ${work}/session-env/$1.
+session_snapshot() {
+  local out="${work}/session-env/$1"
+  session_env snapshot "$1"
+  mkdir -p "${out}"
+  podman exec "${container}" tar -C "/run/coding-session-env/snapshots/$1" -cf - . |
+    tar -C "${out}" -xf -
+  podman exec "${container}" env | bash "${script_dir}/session-env.sh" stable \
+    >"${out}/exec-root"
+  podman exec --user coder "${container}" env |
+    bash "${script_dir}/session-env.sh" stable >"${out}/exec-coder"
 }
 start_outer "${identity_volume}"
 pass_outer 'image boot, user manager and journal forwarding'
@@ -386,6 +412,27 @@ coder_ipc="$(coder podman run --rm mirror.gcr.io/library/alpine:3 \
   exit 1
 }
 pass_outer 'root: private IPC for root, host IPC for coder'
+session_env_setup
+session_snapshot hook
+session_env remove-hook
+pass_outer 'session hook: /etc/pam.d differs from the removed hook only by its two lines'
+session_snapshot plain
+session_env restore-hook
+session_env finish
+diff -r -x journal "${work}/session-env/hook" "${work}/session-env/plain" || {
+  echo 'the session hook changes login environments without a mounted file' >&2
+  exit 1
+}
+pass_outer 'session hook: unchanged login environments without a mounted file'
+diff "${work}/session-env/hook/journal" "${work}/session-env/plain/journal" || {
+  echo 'the session hook changes PAM journal messages without a mounted file' >&2
+  exit 1
+}
+if grep -F /etc/coding/session.env "${work}/session-env/hook/journal"; then
+  echo 'PAM logs the session file without a mounted file' >&2
+  exit 1
+fi
+pass_outer 'session hook: no new PAM journal messages without a mounted file'
 # Readable private keys with missing or empty public keys must be repaired on restart.
 podman exec "${container}" bash -ec '
   dir=/var/lib/host-identity
@@ -412,6 +459,37 @@ coder sudo bash -ec '
   systemctl is-active --quiet user@0.service'
 coder sudo podman run --rm --pull=never "${root_image}" true
 pass_outer 'root: nested image storage persists after re-creation'
+podman rm -f --volumes -t 0 "${container}" >/dev/null
+start_outer "${identity_volume}" --volume "${work}/session.env:/etc/coding/session.env:ro"
+session_env_setup
+session_env deliver "${root_image}"
+pass_outer 'session hook: literal values in SSH, su, sudo, user managers and sudo podman'
+session_env side-effects
+for user in root coder; do
+  if podman exec --user "${user}" "${container}" env | grep '^CODING_HOOK_'; then
+    echo "podman exec as ${user} gets session file variables" >&2
+    exit 1
+  fi
+done
+pass_outer 'session hook: no file variables in PID 1, a system unit or podman exec'
+session_env persist "${root_image}"
+pass_outer 'session hook: kept after pam-auth-update and libpam-runtime reinstall'
+session_env mutate "${root_image}"
+pass_outer 'session hook: each delivery check fails with readenv=0 and without profile'
+session_env priority
+pass_outer 'session hook: priority against /etc/environment and /etc/default/locale'
+session_env finish
+podman rm -f --volumes -t 0 "${container}" >/dev/null
+start_outer "${identity_volume}" \
+  --volume "${work}/session-empty.env:/etc/coding/session.env:ro"
+session_env_setup
+session_snapshot empty
+session_env finish
+diff -r -x journal "${work}/session-env/hook" "${work}/session-env/empty" || {
+  echo 'an empty mounted session file differs from no mounted file' >&2
+  exit 1
+}
+pass_outer 'session hook: an empty mounted file equals no mounted file'
 podman rm -f --volumes -t 0 "${container}" >/dev/null
 start_outer "${fresh_identity_volume}"
 fresh_identity="$(identity_state)"
