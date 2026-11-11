@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# cspell:ignore getaddrinfo urlopen
 # shellcheck disable=SC2016,SC2317
 set -ueo pipefail
 unset CONTAINER_HOST CONTAINER_CONNECTION
@@ -39,7 +40,7 @@ network="coding-net-${suffix}"
 server="coding-server-${suffix}"
 built_image="localhost/coding-build-${suffix}:test" # DevSkim: ignore DS162092
 image='mirror.gcr.io/library/alpine:3'
-server_image='mirror.gcr.io/library/python:3-alpine'
+server_image='mirror.gcr.io/library/python:3-slim'
 passed=0
 failed=0
 skipped=0
@@ -141,9 +142,15 @@ test_limits() {
     test "$(cat /sys/fs/cgroup/memory.max)" = 134217728
     test "$(cat /sys/fs/cgroup/pids.max)" = 64'
 }
+# Network cases use Python: busybox wget ignores no_proxy and sends HTTPS to a proxy
+# without CONNECT, while urllib takes the proxy variables Podman passes into containers.
 test_pasta() {
-  p run --rm --network=pasta "${image}" \
-    sh -ec 'nslookup example.com; wget -qO /dev/null https://example.com'
+  p run --rm -i --network=pasta "${server_image}" python - <<'PY'
+import socket
+import urllib.request
+print(sorted({a[4][0] for a in socket.getaddrinfo('example.com', 443)}))
+urllib.request.urlopen('https://example.com', timeout=30).read()
+PY
 }
 test_network() { p network create "${network}"; }
 test_server() {
@@ -198,11 +205,19 @@ test_port() {
   echo 'bridge port forwarding of root podman without CAP_SYS_ADMIN'
   return 77
 }
+# The peer is reached directly, the proxy of the environment is kept for the rest.
 test_peer() {
-  p run --rm --network="${network}" "${image}" sh -ec '
-    nslookup coding-server.dns.podman.
-    wget -qO /dev/null http://coding-server:8000/ # DevSkim: ignore DS137138
-    wget -qO /dev/null https://example.com'
+  local bypass="${no_proxy:-${NO_PROXY:-}}"
+  bypass="${bypass:+${bypass},}coding-server"
+  p run --rm -i --network="${network}" --env "no_proxy=${bypass}" \
+    --env "NO_PROXY=${bypass}" "${server_image}" python - <<'PY'
+import socket
+import urllib.request
+print(sorted({a[4][0] for a in socket.getaddrinfo('coding-server.dns.podman.', 8000)}))
+peer = 'http://coding-server:8000/'  # DevSkim: ignore DS137138
+urllib.request.urlopen(peer, timeout=30).read()
+urllib.request.urlopen('https://example.com', timeout=30).read()
+PY
 }
 test_bind() {
   mkdir -p "${work}/bind"
