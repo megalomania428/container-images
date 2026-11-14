@@ -1,4 +1,5 @@
 <!-- markdownlint-disable MD013 -->
+<!-- cspell:ignore Ansible conffile envfile inode readenv runuser unsets -->
 # Vibe coding container with systemd and rootless Podman
 
 The Quadlet runs systemd as PID 1 and UID 0 inside the container. Coding commands run as `coder` (UID 1000), whose nested Podman uses its own engine, storage and user namespaces. No host Podman socket, outer `CAP_SYS_ADMIN` or outer `CAP_NET_ADMIN` is required. The init wrapper forwards the container journal to stdout for `podman logs` and the host Quadlet journal.
@@ -127,6 +128,28 @@ The image diverts the `systemd-sysv` package's init executable to `init.distrib`
 
 Nested rootless containers can run UID 0 without a rootful engine. Ordinary nested containers default to the outer network namespace. Services such as SSH should use their own network, for example `--network=pasta`: a shared port can already be occupied, and a capability in a nested user namespace does not grant a privileged-port bind in an ancestor network namespace.
 
+## Session environment hook
+
+The image provides one place to add variables to PAM sessions without shipping any values. The `pam-auth-update` profile `/usr/share/pam-configs/coding-env` adds this line to `/etc/pam.d/common-session` and `/etc/pam.d/common-session-noninteractive`:
+
+```text
+session optional pam_env.so readenv=1 user_readenv=0 conffile=/dev/null envfile=/etc/coding/session.env
+```
+
+The image ships `/etc/coding/session.env` as an empty file owned by root with mode `0644`. Without a mount every session therefore gets exactly the environment it got before the hook existed, and the hook adds no journal messages; a missing file would make `pam_env` log `Unable to open env file` as an error on every login. To deliver variables, bind-mount a file over it read-only, for example with this line in the Quadlet example above:
+
+```ini
+Volume=%h/volumes/vibecoding-main/session.env:/etc/coding/session.env:ro
+```
+
+The source file must exist before the container starts. Its owner may be any UID mapped into the container: the container's root reads it through `CAP_DAC_OVERRIDE`, so mode `0600` is enough. An unreadable file makes `pam_env` log an error and add nothing.
+
+The file uses the `pam_env` envfile format, not shell syntax. Each line is `NAME=value`; names consist of letters, digits and `_`, other names are logged and skipped, and a leading `export` followed by a space is ignored. `#` starts a comment anywhere in a line, even inside quotes, so a value cannot contain `#`. There is no escaping and no expansion: `$`, `${…}`, `@{…}`, `%`, `@`, `"` and `\` inside a value arrive literally. A `\` at the end of a line joins the next line to it, so a value cannot end with `\`. If a value starts with `"` or `'`, that quote and a quote at the very end of the line are removed without checking that they match; all other quotes stay. A line with only `NAME` unsets the variable.
+
+The hook covers every PAM service that includes these files: SSH logins and remote commands, `login`, `su` and `su -`, `sudo` and `sudo -i`, and the user managers `user@1000.service` and `user@0.service` (PAM service `systemd-user`). A change made in place (same inode) is visible to new sessions at once and to the user managers after they restart, but a bind mount of a single file pins its inode, so a file replaced by a new one (atomic rename by Ansible `template` or `copy`, `sed -i`, most editors) stays invisible to the container until it restarts (Quadlet recreates it): restart the container after replacing the file, restarting the user managers is not enough; `systemctl --user show-environment` then lists the variables and user units inherit them. `sudo` adds them despite `env_reset`, except names from its `env_keep` list such as `LANG`, `LC_*` or `PATH`, which keep the caller's value; Podman started through `sudo podman` sees them too, but nested containers get them only through Podman options such as `--env`. Not covered: PID 1 and system units without `PAMName=`, which open no PAM session; `podman exec`, which inherits the container's environment; and `runuser`, whose PAM configuration does not include `common-session`.
+
+If a name is also set in `/etc/environment` or `/etc/default/locale`, the winner depends on the entry point. In SSH sessions `/etc/environment` and `/etc/default/locale` win, because `/etc/pam.d/sshd` reads them after `common-session`. In user managers `/etc/environment` wins, because `systemd-environment-d-generator` applies it after PAM; `/etc/default/locale` does not reach them. In `login`, `su` and `sudo` the hook wins. Do not set the same name in both places. The image's `/etc/environment` is empty.
+
 ## Root Podman through sudo
 
 Images built from this revision on, not the `004` tag in the example above, let `sudo podman …` from `coder` run root Podman without outer `CAP_SYS_ADMIN` or `CAP_NET_ADMIN`. Without these capabilities Podman 5.4 as UID 0 enters its own user namespace built from root's range `root:1001:98998` in `/etc/subuid` and `/etc/subgid`: container UID 0 maps to the outer root and container UIDs from 1 map from outer UID 1001, so a file whose owner a root container sets to `23456:23456` belongs to `24456:24456` in the outer container. `podman info` still reports `rootless: false`, and the startup warning that `/` is not a shared mount is expected. Root's images live in `/var/lib/containers/storage`; the Quadlet example keeps them across re-creation with `Volume=/srv/data/podman/opencode-root:/var/lib/containers`.
@@ -179,7 +202,9 @@ The expected limits are `134217728` and `64`, not limits inherited from an ances
 
 `vibeco-debian13` uses `_shared/test/coding/test.sh` as its `IMAGE_TEST`; `_shared/_all/build.sh` sources it after building the image. Its outer launcher `outer.sh` first saves the image and checks that no layer contains `etc/ssh/ssh_host_*_key` or a non-empty `etc/machine-id` or `var/lib/dbus/machine-id`, because later layers only hide such files, then in a disposable container that `systemd-analyze verify` finds no ordering cycle at a boot with `ssh.socket` enabled, that the image ships no `/etc/machine-id`, `/var/lib/dbus/machine-id` or `/etc/ssh/ssh_host_*`, that the `systemd-sysv` init executable stays diverted to `init.distrib` and that `/sbin/init` equals the repository's journal wrapper both before and after `apt-get install --reinstall systemd-sysv`. It then generates seccomp with the helper **installed in the built image** and starts that image without the two admin capabilities or a host socket, with named home, nested-image, root image store (`/var/lib/containers`) and host identity volumes and SSH published on `127.0.0.1`. On the outer container it checks user-manager boot, the hostname, systemd as PID 1, zero failed units, that `ssh.service` and an `sshd@.service` instance want and wait for `ssh-host-keys.service`, journal forwarding before and after `journalctl --rotate`, the SSH banner, the machine ID and SSH host keys stored in the identity volume and served by `sshd` (`ssh-keyscan`), the coder runtime environment and the installed default storage/configuration, and the same for root through `sudo` from `coder`. It makes two stored private keys readable by others and removes or empties their public keys, recreates the container with the same volumes and checks the home, the nested images, the machine ID, the repaired key permissions and public keys and the key fingerprints, starts it once more with a new empty identity volume that must yield a different machine ID and different keys, and runs the installed runtime suite twice: as `coder` and as root through `sudo` from `coder`, even if the first run fails. A GitHub Actions runner's rootless map is split at container ID 65537, which root's range `root:1001:98998` crosses, so the outer container gets test-only `/etc/subuid` and `/etc/subgid` bind mounts: the image's files with root's range replaced by `root:1000000:65536`.
 
-The outer launcher reports 16 cases, six of which run as root through `sudo` from `coder`, exactly as a user does:
+After the IPC case the launcher copies `_shared/test/coding/session-env.sh` into the container and, without a mounted session file, compares two states of that container: with the hook and after `pam-auth-update --remove coding-env`, restarting both user managers before each snapshot. It compares `/etc/pam.d`, the environments of an interactive SSH login and an SSH command as `coder`, `su - coder`, `sudo env` from `coder`, `systemctl --user show-environment` of `coder` and root, `podman exec` as root and as `coder`, PID 1 and a system unit, ignoring only per-session and per-container variables such as `XDG_SESSION_ID`, `SSH_CONNECTION` or `container_uuid`, and the PAM warnings and errors in the journal. After the re-creation cases it starts the image with a fixture mounted read-only on `/etc/coding/session.env`, whose values contain `$`, `\`, `"`, `%` and `@`, and checks their literal delivery (in `systemctl --user show-environment` of both user managers after undoing the shell-style quoting of systemd, byte for byte), their absence from PID 1, a system unit and `podman exec`, the hook line and delivery after `pam-auth-update --package` and a `libpam-runtime` reinstall, that the same delivery check fails at every entry point with `readenv=0` and after `pam-auth-update --remove coding-env`, and which value wins against `/etc/environment` and `/etc/default/locale` in SSH, `login`, `su`, `sudo` and in both user managers. Then it starts the image with an empty file mounted and compares its environments with those of the first container.
+
+The outer launcher reports 25 cases, six of which run as root through `sudo` from `coder`, exactly as a user does:
 
 1. Image without identity files or SSH unit cycles, init wrapper kept after `systemd-sysv` reinstall.
 2. Image boot, user manager and journal forwarding.
@@ -194,9 +219,18 @@ The outer launcher reports 16 cases, six of which run as root through `sudo` fro
 11. Root: installed default storage and configuration – root storage on `/var/lib/containers/storage` with fuse-overlayfs, pull, tag and run.
 12. Root: memory and PID limits (mqueue regression).
 13. Root: private IPC for root, host IPC for coder.
-14. Recreated image with persistent home, nested image storage and host identity.
-15. Root: nested image storage persists after re-creation.
-16. Fresh host identity volume yields a new machine ID and SSH host keys.
+14. Session hook: `/etc/pam.d` differs from the state after `pam-auth-update --remove coding-env` only by the two hook lines.
+15. Session hook: unchanged login environments without a mounted file.
+16. Session hook: no new PAM journal messages without a mounted file.
+17. Recreated image with persistent home, nested image storage and host identity.
+18. Root: nested image storage persists after re-creation.
+19. Session hook: literal values in SSH, `su`, `sudo`, both user managers and `sudo podman`.
+20. Session hook: no file variables in PID 1, a system unit or `podman exec`.
+21. Session hook: kept after `pam-auth-update --package` and a `libpam-runtime` reinstall.
+22. Session hook: each delivery check fails with `readenv=0` and without the profile.
+23. Session hook: priority against `/etc/environment` and `/etc/default/locale` in SSH, `login`, `su`, `sudo` and both user managers.
+24. Session hook: an empty mounted file gives the same environments as no mounted file.
+25. Fresh host identity volume yields a new machine ID and SSH host keys.
 
 The host-side launcher requires rootless Podman, crun, jq, `ssh-keyscan`, a working user systemd manager, delegated cgroup v2, sufficiently large subordinate UID/GID maps and `/dev/fuse`; it checks them and fails with an explanatory message instead of changing the host. `test.sh` passes `XDG_RUNTIME_DIR`, by default `/run/user/<UID>`, and the matching `DBUS_SESSION_BUS_ADDRESS` only to its child scripts, not to the sourcing `build.sh`. Only under GitHub Actions (`GITHUB_ACTIONS=true`) it first runs `_shared/test/coding/ci-host.sh` with the same two variables, which installs crun, jq and openssh-client, adds a non-overlapping two-million-ID subordinate range, enables linger, starts the user manager and then runs `podman system migrate` because the runner's rootless engine already started during the build with the old ID map. Unavailable mandatory prerequisites fail rather than skipping the whole suite. The launcher uses a private outer IPC namespace to avoid collisions with its own Podman locks. AppArmor is disabled for this integration container to avoid host-specific nesting restrictions; seccomp remains enabled with only the documented two-syscall adjustment.
 
@@ -222,6 +256,8 @@ The outer container checks report `PASS outer N: name` in their own series. The 
 18. Local Docker-compatible API.
 19. Rejection of host PID with disabled cgroups.
 20. Rejection of hostname with host UTS.
+
+Network cases 6 and 10 run Python in a Debian image without busybox: busybox `wget` ignores `no_proxy` and sends HTTPS to a proxy without CONNECT, while `urllib` uses the proxy variables Podman passes into containers. Case 10 adds the peer name to `no_proxy` and keeps the proxy for outbound HTTPS.
 
 KVM/TUN cases report explicit `SKIP` when their device is absent. `CODING_TEST_REQUIRE_DEVICES=1` makes missing devices fail instead. Existing but unusable devices always fail. Under root two more cases may report `SKIP`, only with their known symptom: `published-port` when no curl attempt fails other than by refusal (exit code 7) or timeout (exit code 28), the last one times out, and after every timeout a probe of the published bridge port accepts a TCP connection but receives no byte back to an HTTP request within five seconds, and `image-mount` when `podman image mount` fails with `panic: runtime error: invalid memory address or nil pointer dereference` or `cannot mount using driver overlay in rootless mode`. Any other error in these cases fails, and a working case passes. `CODING_TEST_KEEP_LOGS=1` retains logs; the outer launcher copies runtime logs, in `coder` and `root` subdirectories, out before deleting its test container. Graphroot/runroot are isolated and cleaned without global reset/prune/migrate. Public base images use `mirror.gcr.io`.
 

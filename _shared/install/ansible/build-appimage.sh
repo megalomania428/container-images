@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# cspell:ignore manylinux libcst
 set -euo pipefail
 # Builds AppImage for ansible-NN or mkosi-NN tags.
 # Runs inside the builder stage of the ansible image built with APPIMAGE_TARGET.
@@ -51,6 +52,11 @@ ansible-*)
     echo "Error: requirements.txt not found at ${REQUIREMENTS}"
     exit 1
   fi
+  # libcst publishes only manylinux_2_28 wheels, so it is built from source on glibc 2.27
+  echo "Installing Rust toolchain…"
+  export RUSTUP_HOME='/tmp/rustup' CARGO_HOME='/tmp/cargo'
+  curl -fsSLm 111 https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
+  export PATH="${CARGO_HOME}/bin:${PATH}"
   echo "Installing ansible packages from requirements.txt…"
   bin/python -m pip install -r "${REQUIREMENTS}"
   ;;

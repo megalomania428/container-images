@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cspell:ignore atopacct oneshot postinst
+# cspell:ignore atopacct conffile envfile oneshot postinst readenv
 set -ueo pipefail
 # podman
 /files/shared/podman.sh
@@ -29,7 +29,7 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get install -y --no-install-recommends \
   bash apt-utils apt-file ca-certificates ethtool bash-completion tcpdump less xxd \
-  vim tmux screen curl wget rsync xz-utils pixz nmap atop htop traceroute sudo \
+  vim tmux screen curl wget rsync xz-utils pixz nmap atop htop traceroute sudo yapf3 \
   whois iotop netcat-openbsd telnet bind9-utils bind9-host bind9-dnsutils gdisk p7zip \
   iftop nmon reptyr psmisc jq git bc lsof progress pv tree iproute2 net-tools \
   hostname dmidecode groff-base hdparm lshw iputils-ping iputils-arping locales \
@@ -113,6 +113,20 @@ XDG_RUNTIME_DIR=/run/user/1000
 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 EOF
   chmod 644 /etc/coding/coder-runtime.env
+  # Consumers bind-mount their variables over this empty file: a missing envfile
+  # makes pam_env log an error on every session.
+  install -m 644 /dev/null /etc/coding/session.env
+  pam_env_args='readenv=1 user_readenv=0 conffile=/dev/null'
+  cat <<EOF >/usr/share/pam-configs/coding-env
+Name: Coding session environment from /etc/coding/session.env
+Default: yes
+Priority: 0
+Session-Type: Additional
+Session:
+  optional pam_env.so ${pam_env_args} envfile=/etc/coding/session.env
+EOF
+  chmod 644 /usr/share/pam-configs/coding-env
+  pam-auth-update --package
 fi
 mkdir -vp /workspace
 chown coder:coder /workspace
