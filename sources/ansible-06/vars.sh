@@ -2,7 +2,7 @@
 set -ueo pipefail
 # shellcheck disable=2034
 {
-  IMAGE_VER='005'
+  IMAGE_VER='006'
   APP_IMAGE=1
 }
 # shellcheck source=/dev/null
