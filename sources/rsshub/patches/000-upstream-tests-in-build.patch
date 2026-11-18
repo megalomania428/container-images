@@ -1,0 +1,595 @@
+diff -ruN -x .git a/.dockerignore b/.dockerignore
+--- a/.dockerignore	2026-11-18 15:11:05.190262261 +0000
++++ b/.dockerignore	2026-11-18 15:12:49.772853353 +0000
+@@ -6,7 +6,6 @@
+ .vscode
+ app-minimal
+ coverage
+-eslint-plugins
+ node_modules
+ test
+ 
+@@ -16,7 +15,6 @@
+ .editorconfig
+ .env*
+ .eslint*
+-.gitignore
+ .markdownlint.jsonc
+ .(yarn|npm|nvm)rc
+ *.md
+@@ -34,7 +32,6 @@
+ package-lock.json
+ tsdown-lib.config.ts
+ tsdown-vercel.config.ts
+-vitest.config.ts
+ vercel.json
+ 
+ # git but keep the git commit hash
+diff -ruN -x .git a/Dockerfile b/Dockerfile
+--- a/Dockerfile	2026-11-18 15:11:05.202262559 +0000
++++ b/Dockerfile	2026-11-18 15:12:49.768853254 +0000
+@@ -31,6 +31,20 @@
+ 
+ # ---------------------------------------------------------------------------------------------------------------------
+ 
++FROM dep-builder AS test
++# Runs the upstream checks before the build: docker-minifier copies the marker, so a failed check stops the image.
++# RSSHUB_BUILD_TEST=1 skips the tests that need Redis, a browser or the Internet.
++
++ENV RSSHUB_BUILD_TEST=1
++COPY . /app
++RUN \
++    set -ex && \
++    pnpm build:routes && \
++    pnpm test && \
++    touch /tmp/tests-passed
++
++# ---------------------------------------------------------------------------------------------------------------------
++
+ FROM debian:trixie-slim AS dep-version-parser
+ # This stage is necessary to limit the cache miss scope.
+ # With this stage, any modification to package.json won't break the build cache of the next two stages as long as the
+@@ -66,12 +80,13 @@
+ 
+ COPY . /app
+ COPY --from=dep-builder /app /app
++COPY --from=test /tmp/tests-passed /tmp/tests-passed
+ 
+ WORKDIR /app
+ RUN \
+     set -ex && \
+     pnpm build && \
+-    rm -rf /app/lib && \
++    rm -rf /app/lib /app/vitest.config.ts /app/eslint-plugins /app/.gitignore && \
+     cp /app/scripts/docker/minify-docker.js /minifier/ && \
+     export PROJECT_ROOT=/app && \
+     node /minifier/minify-docker.js && \
+diff -ruN -x .git a/lib/app.test.ts b/lib/app.test.ts
+--- a/lib/app.test.ts	2026-11-18 15:11:05.214262856 +0000
++++ b/lib/app.test.ts	2026-11-18 15:12:49.792853848 +0000
+@@ -18,7 +18,7 @@
+ });
+ 
+ describe('request-rewriter', () => {
+-    it('should rewrite request', async () => {
++    it.skipIf(process.env.RSSHUB_BUILD_TEST === '1')('should rewrite request', async () => {
+         const fetchSpy = vi.spyOn(undici, 'fetch');
+         await app.request('/test/httperror');
+ 
+diff -ruN -x .git a/lib/errors/index.test.ts b/lib/errors/index.test.ts
+--- a/lib/errors/index.test.ts	2026-11-18 15:11:05.218262955 +0000
++++ b/lib/errors/index.test.ts	2026-11-18 15:35:34.656390741 +0000
+@@ -26,12 +26,16 @@
+ });
+ 
+ describe('httperror', () => {
+-    it('httperror', async () => {
+-        const response = await app.request('/test/httperror');
+-        expect(response.status).toBe(503);
+-        const text = await response.text();
+-        expect(text).toContain('FetchError: [GET] &quot;https://httpbingo.org/status/404&quot;: 404');
+-    }, 20000);
++    it.skipIf(process.env.RSSHUB_BUILD_TEST === '1')(
++        'httperror',
++        async () => {
++            const response = await app.request('/test/httperror');
++            expect(response.status).toBe(503);
++            const text = await response.text();
++            expect(text).toContain('FetchError: [GET] &quot;https://httpbingo.org/status/404&quot;: 404');
++        },
++        20000
++    );
+ });
+ 
+ describe('RequestInProgressError', () => {
+@@ -76,7 +80,7 @@
+ });
+ 
+ describe('route throws an error', () => {
+-    it('route path error should have path mounted', async () => {
++    it.skipIf(process.env.RSSHUB_BUILD_TEST === '1')('route path error should have path mounted', async () => {
+         await app.request('/test/error');
+         await app.request('/thisDoesNotExist');
+         const response = await app.request('/');
+diff -ruN -x .git a/lib/middleware/cache.test.ts b/lib/middleware/cache.test.ts
+--- a/lib/middleware/cache.test.ts	2026-11-18 15:11:05.222263054 +0000
++++ b/lib/middleware/cache.test.ts	2026-11-18 15:52:52.371943607 +0000
+@@ -37,109 +37,117 @@
+ };
+ 
+ describe('cache', () => {
+-    it('memory', async () => {
+-        process.env.CACHE_TYPE = 'memory';
+-        const app = (await import('@/app')).default;
+-
+-        const response1 = await app.request('/test/cache');
+-        const response2 = await app.request('/test/cache');
+-
+-        const parsed1 = await parser.parseString(await response1.text());
+-        const parsed2 = await parser.parseString(await response2.text());
+-
+-        delete parsed1.lastBuildDate;
+-        delete parsed2.lastBuildDate;
+-        delete parsed1.feedUrl;
+-        delete parsed2.feedUrl;
+-        delete parsed1.paginationLinks;
+-        delete parsed2.paginationLinks;
+-        expect(parsed2).toMatchObject(parsed1);
+-
+-        expect(response2.status).toBe(200);
+-        expect(response2.headers.get('rsshub-cache-status')).toBe('HIT');
+-
+-        expect(parsed1.ttl).toEqual('1');
+-
+-        await wait(1 * 1000 + 100);
+-        const response3 = await app.request('/test/cache');
+-        expect(response3.headers).not.toHaveProperty('rsshub-cache-status');
+-        const parsed3 = await parser.parseString(await response3.text());
+-
+-        await wait(2 * 1000 + 100);
+-        const response4 = await app.request('/test/cache');
+-        const parsed4 = await parser.parseString(await response4.text());
+-
+-        expect(parsed1.items[0].content).toBe('Cache1');
+-        expect(parsed2.items[0].content).toBe('Cache1');
+-        expect(parsed3.items[0].content).toBe('Cache1');
+-        expect(parsed4.items[0].content).toBe('Cache2');
+-
+-        await app.request('/test/refreshCache');
+-        await wait(1 * 1000 + 100);
+-        const response5 = await app.request('/test/refreshCache');
+-        const parsed5 = await parser.parseString(await response5.text());
+-        await wait(1 * 1000 + 100);
+-        const response6 = await app.request('/test/refreshCache');
+-        const parsed6 = await parser.parseString(await response6.text());
+-
+-        expect(parsed5.items[0].content).toBe('1 1');
+-        expect(parsed6.items[0].content).toBe('1 0');
+-    }, 10000);
++    it.skipIf(process.env.RSSHUB_BUILD_TEST === '1')(
++        'memory',
++        async () => {
++            process.env.CACHE_TYPE = 'memory';
++            const app = (await import('@/app')).default;
++
++            const response1 = await app.request('/test/cache');
++            const response2 = await app.request('/test/cache');
++
++            const parsed1 = await parser.parseString(await response1.text());
++            const parsed2 = await parser.parseString(await response2.text());
++
++            delete parsed1.lastBuildDate;
++            delete parsed2.lastBuildDate;
++            delete parsed1.feedUrl;
++            delete parsed2.feedUrl;
++            delete parsed1.paginationLinks;
++            delete parsed2.paginationLinks;
++            expect(parsed2).toMatchObject(parsed1);
++
++            expect(response2.status).toBe(200);
++            expect(response2.headers.get('rsshub-cache-status')).toBe('HIT');
++
++            expect(parsed1.ttl).toEqual('1');
++
++            await wait(1 * 1000 + 100);
++            const response3 = await app.request('/test/cache');
++            expect(response3.headers).not.toHaveProperty('rsshub-cache-status');
++            const parsed3 = await parser.parseString(await response3.text());
++
++            await wait(2 * 1000 + 100);
++            const response4 = await app.request('/test/cache');
++            const parsed4 = await parser.parseString(await response4.text());
++
++            expect(parsed1.items[0].content).toBe('Cache1');
++            expect(parsed2.items[0].content).toBe('Cache1');
++            expect(parsed3.items[0].content).toBe('Cache1');
++            expect(parsed4.items[0].content).toBe('Cache2');
++
++            await app.request('/test/refreshCache');
++            await wait(1 * 1000 + 100);
++            const response5 = await app.request('/test/refreshCache');
++            const parsed5 = await parser.parseString(await response5.text());
++            await wait(1 * 1000 + 100);
++            const response6 = await app.request('/test/refreshCache');
++            const parsed6 = await parser.parseString(await response6.text());
++
++            expect(parsed5.items[0].content).toBe('1 1');
++            expect(parsed6.items[0].content).toBe('1 0');
++        },
++        10000
++    );
++
++    it.skipIf(process.env.RSSHUB_BUILD_TEST === '1')(
++        'redis',
++        async () => {
++            process.env.CACHE_TYPE = 'redis';
++            const app = (await import('@/app')).default;
++
++            await wait(500);
++            const response1 = await app.request('/test/cache');
++            const response2 = await app.request('/test/cache');
++
++            const parsed1 = await parser.parseString(await response1.text());
++            const parsed2 = await parser.parseString(await response2.text());
++
++            delete parsed1.lastBuildDate;
++            delete parsed2.lastBuildDate;
++            delete parsed1.feedUrl;
++            delete parsed2.feedUrl;
++            delete parsed1.paginationLinks;
++            delete parsed2.paginationLinks;
++            expect(parsed2).toMatchObject(parsed1);
++
++            expect(response2.status).toBe(200);
++            expect(response2.headers.get('rsshub-cache-status')).toBe('HIT');
++
++            expect(parsed1.ttl).toEqual('1');
++
++            await wait(1 * 1000 + 100);
++            const response3 = await app.request('/test/cache');
++            expect(response3.headers).not.toHaveProperty('rsshub-cache-status');
++            const parsed3 = await parser.parseString(await response3.text());
++
++            await wait(2 * 1000 + 100);
++            const response4 = await app.request('/test/cache');
++            const parsed4 = await parser.parseString(await response4.text());
++
++            expect(parsed1.items[0].content).toBe('Cache1');
++            expect(parsed2.items[0].content).toBe('Cache1');
++            expect(parsed3.items[0].content).toBe('Cache1');
++            expect(parsed4.items[0].content).toBe('Cache2');
++
++            await app.request('/test/refreshCache');
++            await wait(1 * 1000 + 100);
++            const response5 = await app.request('/test/refreshCache');
++            const parsed5 = await parser.parseString(await response5.text());
++            await wait(1 * 1000 + 100);
++            const response6 = await app.request('/test/refreshCache');
++            const parsed6 = await parser.parseString(await response6.text());
++
++            expect(parsed5.items[0].content).toBe('1 1');
++            expect(parsed6.items[0].content).toBe('1 0');
++
++            const cache = (await import('@/utils/cache')).default;
++            await cache.clients.redisClient!.quit();
++        },
++        10000
++    );
+ 
+-    it('redis', async () => {
+-        process.env.CACHE_TYPE = 'redis';
+-        const app = (await import('@/app')).default;
+-
+-        await wait(500);
+-        const response1 = await app.request('/test/cache');
+-        const response2 = await app.request('/test/cache');
+-
+-        const parsed1 = await parser.parseString(await response1.text());
+-        const parsed2 = await parser.parseString(await response2.text());
+-
+-        delete parsed1.lastBuildDate;
+-        delete parsed2.lastBuildDate;
+-        delete parsed1.feedUrl;
+-        delete parsed2.feedUrl;
+-        delete parsed1.paginationLinks;
+-        delete parsed2.paginationLinks;
+-        expect(parsed2).toMatchObject(parsed1);
+-
+-        expect(response2.status).toBe(200);
+-        expect(response2.headers.get('rsshub-cache-status')).toBe('HIT');
+-
+-        expect(parsed1.ttl).toEqual('1');
+-
+-        await wait(1 * 1000 + 100);
+-        const response3 = await app.request('/test/cache');
+-        expect(response3.headers).not.toHaveProperty('rsshub-cache-status');
+-        const parsed3 = await parser.parseString(await response3.text());
+-
+-        await wait(2 * 1000 + 100);
+-        const response4 = await app.request('/test/cache');
+-        const parsed4 = await parser.parseString(await response4.text());
+-
+-        expect(parsed1.items[0].content).toBe('Cache1');
+-        expect(parsed2.items[0].content).toBe('Cache1');
+-        expect(parsed3.items[0].content).toBe('Cache1');
+-        expect(parsed4.items[0].content).toBe('Cache2');
+-
+-        await app.request('/test/refreshCache');
+-        await wait(1 * 1000 + 100);
+-        const response5 = await app.request('/test/refreshCache');
+-        const parsed5 = await parser.parseString(await response5.text());
+-        await wait(1 * 1000 + 100);
+-        const response6 = await app.request('/test/refreshCache');
+-        const parsed6 = await parser.parseString(await response6.text());
+-
+-        expect(parsed5.items[0].content).toBe('1 1');
+-        expect(parsed6.items[0].content).toBe('1 0');
+-
+-        const cache = (await import('@/utils/cache')).default;
+-        await cache.clients.redisClient!.quit();
+-    }, 10000);
+-
+-    it('redis with quit', async () => {
++    it.skipIf(process.env.RSSHUB_BUILD_TEST === '1')('redis with quit', async () => {
+         process.env.CACHE_TYPE = 'redis';
+         const cache = (await import('@/utils/cache')).default;
+         await cache.clients.redisClient!.quit();
+diff -ruN -x .git a/lib/utils/cache/index.test.ts b/lib/utils/cache/index.test.ts
+--- a/lib/utils/cache/index.test.ts	2026-11-18 15:11:06.602297246 +0000
++++ b/lib/utils/cache/index.test.ts	2026-11-18 15:25:00.359270023 +0000
+@@ -66,24 +66,28 @@
+         expect(fetcher).toHaveBeenCalledTimes(1);
+     });
+ 
+-    it('redis', async () => {
+-        process.env.CACHE_TYPE = 'redis';
+-        const cache = (await import('@/utils/cache')).default;
+-        await wait(500);
+-        if (!cache.clients.redisClient || !cache.status.available) {
+-            throw new Error('Redis client error');
+-        }
+-        expect(cache.globalCache.supportsAtomicClaims).toBe(true);
+-        await cache.set('mock1', undefined);
+-        expect(await cache.get('mock1')).toBe('');
+-        await cache.set('mock2', '2');
+-        await cache.set('mock2', '2');
+-        expect(await cache.get('mock2')).toBe('2');
+-        expect(await cache.has('mock2')).toBe(true);
+-        await cache.clients.redisClient?.quit();
+-    }, 10000);
++    it.skipIf(process.env.RSSHUB_BUILD_TEST === '1')(
++        'redis',
++        async () => {
++            process.env.CACHE_TYPE = 'redis';
++            const cache = (await import('@/utils/cache')).default;
++            await wait(500);
++            if (!cache.clients.redisClient || !cache.status.available) {
++                throw new Error('Redis client error');
++            }
++            expect(cache.globalCache.supportsAtomicClaims).toBe(true);
++            await cache.set('mock1', undefined);
++            expect(await cache.get('mock1')).toBe('');
++            await cache.set('mock2', '2');
++            await cache.set('mock2', '2');
++            expect(await cache.get('mock2')).toBe('2');
++            expect(await cache.has('mock2')).toBe(true);
++            await cache.clients.redisClient?.quit();
++        },
++        10000
++    );
+ 
+-    it('redis with quit', async () => {
++    it.skipIf(process.env.RSSHUB_BUILD_TEST === '1')('redis with quit', async () => {
+         process.env.CACHE_TYPE = 'redis';
+         const cache = (await import('@/utils/cache')).default;
+         if (cache.clients.redisClient) {
+@@ -119,7 +123,7 @@
+         expect(cache.globalCache.set('mock2', '2')).toBeNull();
+     });
+ 
+-    it('throws TTL key', async () => {
++    it.skipIf(process.env.RSSHUB_BUILD_TEST === '1')('throws TTL key', async () => {
+         process.env.CACHE_TYPE = 'redis';
+         const cache = (await import('@/utils/cache')).default;
+ 
+@@ -134,7 +138,8 @@
+ });
+ 
+ describe('atomic cache backends', () => {
+-    it.each(['memory', 'redis'])('retains atomic claims and release for %s', async (backend) => {
++    it.for(['memory', 'redis'])('retains atomic claims and release for %s', async (backend, { skip }) => {
++        skip(backend === 'redis' && process.env.RSSHUB_BUILD_TEST === '1', 'the image build has no Redis');
+         process.env.CACHE_TYPE = backend;
+         const cache = (await import('@/utils/cache')).default;
+         const key = `rsshub-test:atomic-claim:${backend}`;
+diff -ruN -x .git a/lib/utils/playwright-utils.test.ts b/lib/utils/playwright-utils.test.ts
+--- a/lib/utils/playwright-utils.test.ts	2026-11-18 15:11:06.614297543 +0000
++++ b/lib/utils/playwright-utils.test.ts	2026-11-18 15:25:01.015282375 +0000
+@@ -68,35 +68,47 @@
+         }
+     });
+ 
+-    it('getCookies httpbingo', async () => {
+-        context = await playwright();
+-        const page = await context.newPage();
+-        await page.goto('https://httpbingo.org/cookies/set?foo=bar&baz=qux', {
+-            waitUntil: 'domcontentloaded',
+-        });
+-        expect((await getCookies(page, 'httpbingo.org')).split('; ').toSorted((a, b) => a.localeCompare(b))).toEqual(['foo=bar', 'baz=qux'].toSorted((a, b) => a.localeCompare(b)));
+-    }, 45000);
++    it.skipIf(process.env.RSSHUB_BUILD_TEST === '1')(
++        'getCookies httpbingo',
++        async () => {
++            context = await playwright();
++            const page = await context.newPage();
++            await page.goto('https://httpbingo.org/cookies/set?foo=bar&baz=qux', {
++                waitUntil: 'domcontentloaded',
++            });
++            expect((await getCookies(page, 'httpbingo.org')).split('; ').toSorted((a, b) => a.localeCompare(b))).toEqual(['foo=bar', 'baz=qux'].toSorted((a, b) => a.localeCompare(b)));
++        },
++        45000
++    );
+ 
+-    it('setCookies httpbingo', async () => {
+-        context = await playwright();
+-        const page = await context.newPage();
+-        // httpbingo.org cannot recognize cookies with empty name properly, so we cannot use cookieStrAll here
+-        await setCookies(page, cookieStrExampleCom, 'httpbingo.org');
+-        await page.goto('https://httpbingo.org/cookies', {
+-            waitUntil: 'domcontentloaded',
+-        });
+-        const data = await page.evaluate(() => JSON.parse(document.body.textContent || ''));
+-        expect(data.cookies).toEqual(Object.fromEntries(cookieArrayExampleCom.map(({ name, value }) => [name, value])));
+-    }, 45000);
++    it.skipIf(process.env.RSSHUB_BUILD_TEST === '1')(
++        'setCookies httpbingo',
++        async () => {
++            context = await playwright();
++            const page = await context.newPage();
++            // httpbingo.org cannot recognize cookies with empty name properly, so we cannot use cookieStrAll here
++            await setCookies(page, cookieStrExampleCom, 'httpbingo.org');
++            await page.goto('https://httpbingo.org/cookies', {
++                waitUntil: 'domcontentloaded',
++            });
++            const data = await page.evaluate(() => JSON.parse(document.body.textContent || ''));
++            expect(data.cookies).toEqual(Object.fromEntries(cookieArrayExampleCom.map(({ name, value }) => [name, value])));
++        },
++        45000
++    );
+ 
+-    it('setCookies & getCookies example.org', async () => {
+-        context = await playwright();
+-        const page = await context.newPage();
+-        // we can use cookieStrAll here!
+-        await setCookies(page, cookieStrAll, 'example.org');
+-        await page.goto('https://example.org', {
+-            waitUntil: 'domcontentloaded',
+-        });
+-        expect((await getCookies(page, 'example.org')).split('; ').toSorted((a, b) => a.localeCompare(b))).toEqual(cookieStrAll.split('; ').toSorted((a, b) => a.localeCompare(b)));
+-    }, 45000);
++    it.skipIf(process.env.RSSHUB_BUILD_TEST === '1')(
++        'setCookies & getCookies example.org',
++        async () => {
++            context = await playwright();
++            const page = await context.newPage();
++            // we can use cookieStrAll here!
++            await setCookies(page, cookieStrAll, 'example.org');
++            await page.goto('https://example.org', {
++                waitUntil: 'domcontentloaded',
++            });
++            expect((await getCookies(page, 'example.org')).split('; ').toSorted((a, b) => a.localeCompare(b))).toEqual(cookieStrAll.split('; ').toSorted((a, b) => a.localeCompare(b)));
++        },
++        45000
++    );
+ });
+diff -ruN -x .git a/lib/utils/playwright.test.ts b/lib/utils/playwright.test.ts
+--- a/lib/utils/playwright.test.ts	2026-11-18 15:11:06.614297543 +0000
++++ b/lib/utils/playwright.test.ts	2026-11-18 15:25:01.715295561 +0000
+@@ -102,42 +102,50 @@
+ });
+ 
+ describe('playwright', () => {
+-    it('playwright run', async () => {
+-        const { default: playwright } = await import('./playwright');
+-        context = await playwright();
+-        const browser = context.browser();
+-        const page = await context.newPage();
+-        await page.goto('https://www.google.com', {
+-            waitUntil: 'domcontentloaded',
+-        });
+-
+-        const html = await page.evaluate(() => document.body.getHTML());
+-        expect(html.length).toBeGreaterThan(0);
+-
+-        expect(browser?.isConnected()).toBe(true);
+-        await browser?.close();
+-        expect(browser?.isConnected()).toBe(false);
+-    }, 30000);
+-
+-    it('getPlaywrightPage', async () => {
+-        const { getPlaywrightPage } = await import('./playwright');
+-        const playwright = await getPlaywrightPage('https://www.google.com');
+-        const page = playwright.page;
+-        context = playwright.context;
+-        const browser = context.browser();
+-        const startTime = Date.now();
+-
+-        const html = await page.evaluate(() => document.body.getHTML());
+-        expect(html.length).toBeGreaterThan(0);
+-
+-        expect(browser?.isConnected()).toBe(true);
+-        const sleepTime = 31 * 1000 - (Date.now() - startTime);
+-        if (sleepTime > 0) {
+-            await wait(sleepTime);
+-        }
+-        expect(browser?.isConnected()).toBe(false);
+-        context = null;
+-    }, 45000);
++    it.skipIf(process.env.RSSHUB_BUILD_TEST === '1')(
++        'playwright run',
++        async () => {
++            const { default: playwright } = await import('./playwright');
++            context = await playwright();
++            const browser = context.browser();
++            const page = await context.newPage();
++            await page.goto('https://www.google.com', {
++                waitUntil: 'domcontentloaded',
++            });
++
++            const html = await page.evaluate(() => document.body.getHTML());
++            expect(html.length).toBeGreaterThan(0);
++
++            expect(browser?.isConnected()).toBe(true);
++            await browser?.close();
++            expect(browser?.isConnected()).toBe(false);
++        },
++        30000
++    );
++
++    it.skipIf(process.env.RSSHUB_BUILD_TEST === '1')(
++        'getPlaywrightPage',
++        async () => {
++            const { getPlaywrightPage } = await import('./playwright');
++            const playwright = await getPlaywrightPage('https://www.google.com');
++            const page = playwright.page;
++            context = playwright.context;
++            const browser = context.browser();
++            const startTime = Date.now();
++
++            const html = await page.evaluate(() => document.body.getHTML());
++            expect(html.length).toBeGreaterThan(0);
++
++            expect(browser?.isConnected()).toBe(true);
++            const sleepTime = 31 * 1000 - (Date.now() - startTime);
++            if (sleepTime > 0) {
++                await wait(sleepTime);
++            }
++            expect(browser?.isConnected()).toBe(false);
++            context = null;
++        },
++        45000
++    );
+ });
+ 
+ describe('getPlaywrightPage (mocked)', () => {
+diff -ruN -x .git a/lib/worker.test.ts b/lib/worker.test.ts
+--- a/lib/worker.test.ts	2026-11-18 15:11:06.634298038 +0000
++++ b/lib/worker.test.ts	2026-11-18 15:25:02.351307544 +0000
+@@ -154,9 +154,13 @@
+             expect(response.status).toBeGreaterThanOrEqual(400);
+         }, 30000);
+ 
+-        it('should handle /test/httperror route', async () => {
+-            const response = await worker.fetch('/test/httperror');
+-            expect(response.status).toBeGreaterThanOrEqual(400);
+-        }, 30000);
++        it.skipIf(process.env.RSSHUB_BUILD_TEST === '1')(
++            'should handle /test/httperror route',
++            async () => {
++                const response = await worker.fetch('/test/httperror');
++                expect(response.status).toBeGreaterThanOrEqual(400);
++            },
++            30000
++        );
+     });
+ });

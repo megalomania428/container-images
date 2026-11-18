@@ -4,6 +4,7 @@ set -ueo pipefail
 # shellcheck disable=2034
 {
   IMAGE_VER='000'
+  IMAGE_TEST='test/test.sh'
   SHARED_ASSETS=()
 }
 if [[ -z "${PUSHING:-}" ]]; then
