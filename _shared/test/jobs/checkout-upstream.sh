@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# cspell:ignore gitfile gpgsign mktree noprofile norc NOSYSTEM toplevel
+# cspell:ignore commondir gitfile gpgsign mktree noprofile norc NOSYSTEM reflog
+# cspell:ignore reflogs toplevel
 # Tests for checkout_upstream of _shared/vars.sh. Every case runs the real function in
 # a clean bash started by env -i inside a synthetic project repository, with a local
 # origin instead of the network, and checks both the upstream directory and that the
@@ -22,6 +23,9 @@ PROJECT_HEAD=''
 # commits of the origin tags, set by make_origin
 TAG1=''
 TAG2=''
+# CHECKOUT_UPSTREAM_DEPTH passed by run_checkout only while DEPTH is set, which only
+# the depth cases do; otherwise the variable is absent from the environment
+unset DEPTH
 cleanup() {
   local rc=$?
   rm -rf "${WORK_DIR}"
@@ -64,16 +68,18 @@ new_case() {
 }
 # Call checkout_upstream ORIGIN_URL <tag> [path] in a clean bash from [dir] with [vars]
 # sourced and the current directory changed to [call dir] after that, by default
-# UPSTREAM from the project root with _shared/vars.sh of this repository. Leaves CASE_RC
-# and the log (stdout and stderr) in CASE_DIR.
+# UPSTREAM from the project root with _shared/vars.sh of this repository and, only when
+# DEPTH is set, DEPTH as CHECKOUT_UPSTREAM_DEPTH. Leaves CASE_RC and the log (stdout and
+# stderr) in CASE_DIR.
 run_checkout() {
-  local vars="${4:-${REPO_ROOT}/_shared/vars.sh}"
+  local vars="${4:-${REPO_ROOT}/_shared/vars.sh}" depth_env=()
+  [[ ! -v DEPTH ]] || depth_env=(CHECKOUT_UPSTREAM_DEPTH="${DEPTH}")
   CASE_RC=0
   (
     cd "${3:-${CASE_DIR}/project}"
     # shellcheck disable=2016
     env -i PATH="${PATH}" PWD="${PWD}" HOME="${CASE_DIR}" LC_ALL=C \
-      GIT_CONFIG_GLOBAL=/dev/null \
+      GIT_CONFIG_GLOBAL=/dev/null "${depth_env[@]}" \
       GIT_CONFIG_NOSYSTEM=1 GIT_CEILING_DIRECTORIES="${WORK_DIR}" \
       VARS="${vars}" CALL_DIR="${5:-.}" bash --noprofile --norc -c '
         source "${VARS}"
@@ -143,10 +149,53 @@ check_refused() {
     fail "${desc}" "exit code: ${CASE_RC}" "project tracked: ${tracked}"
   fi
 }
+# check_shallow 'description' <commit count> [absent tag] [absent commit]
+# Expects UPSTREAM to be a shallow clone with the given number of commits reachable from
+# all its refs and reflogs, with absent tag no local tag of that name and with absent
+# commit no object of that commit left in the clone.
+check_shallow() {
+  local desc="$1" want="$2" absent="${3:-}" gone="${4:-}" shallow='' count='' extra=''
+  local kept='' up="${CASE_DIR}/project/${UPSTREAM}"
+  shallow="$(run_git -C "${up}" rev-parse --is-shallow-repository 2>/dev/null)" || true
+  count="$(run_git -C "${up}" rev-list --count --all --reflog 2>/dev/null)" || true
+  if [[ -n "${absent}" ]]; then
+    extra="$(run_git -C "${up}" tag --list "${absent}" 2>/dev/null)" || true
+  fi
+  if [[ -n "${gone}" ]] && run_git -C "${up}" cat-file -e "${gone}" 2>/dev/null; then
+    kept="${gone}"
+  fi
+  if [[ "${shallow}" == 'true' && "${count}" == "${want}" && -z "${extra}" &&
+    -z "${kept}" ]]; then
+    pass "${desc}"
+  else
+    fail "${desc}" "shallow: ${shallow}" "commits: ${count}, expected ${want}" \
+      "unexpected tag: ${extra}" "unexpected commit object: ${kept}"
+  fi
+}
+# check_worktrees_refused 'description' <clone dir> [sibling]
+# Expects exit code 2 with the function message, the clone at TAG1 with its local change
+# kept and, with sibling, the worktree CASE_DIR/other still working at TAG1.
+check_worktrees_refused() {
+  local desc="$1" clone="$2" head='' other=''
+  head="$(run_git -C "${clone}" rev-parse HEAD 2>/dev/null)" || head=''
+  if [[ "${CASE_RC}" -eq 2 && "${head}" == "${TAG1}" &&
+    "$(<"${clone}/file")" == 'local' ]] &&
+    grep -q '^checkout_upstream: ' "${CASE_DIR}/log" &&
+    { [[ -z "${3:-}" ]] ||
+      { other="$(run_git -C "${CASE_DIR}/other" rev-parse HEAD 2>/dev/null)" &&
+        [[ "${other}" == "${TAG1}" ]] &&
+        run_git -C "${CASE_DIR}/other" status >/dev/null 2>&1; }; }; then
+    pass "${desc}"
+  else
+    fail "${desc}" "exit code: ${CASE_RC}" "HEAD: ${head}, expected ${TAG1}" \
+      "sibling HEAD: ${other}"
+  fi
+}
 main() {
   trap cleanup INT QUIT ABRT TERM EXIT
   make_origin
-  local up='' obj=''
+  local clone_depth='' want='' marker='' other='' desc=''
+  local up='' obj='' refs='' after='' head='' branch='' shallow='' tags=''
   echo '=== checkout-upstream.sh tests ==='
   new_case
   run_checkout v1
@@ -369,6 +418,240 @@ main() {
   else
     fail 'symlink target directory is kept' 'elsewhere/file is missing or changed'
   fi
+  DEPTH=''
+  new_case
+  run_checkout v1
+  check 'empty depth gives a full clone' "${TAG1}"
+  up="${CASE_DIR}/project/${UPSTREAM}"
+  shallow="$(run_git -C "${up}" rev-parse --is-shallow-repository)"
+  tags="$(run_git -C "${up}" tag --list v2)"
+  if [[ "${shallow}" == 'false' && "${tags}" == 'v2' ]]; then
+    pass 'empty depth clone is not shallow and holds all tags'
+  else
+    fail 'empty depth clone is not shallow and holds all tags'
+  fi
+  DEPTH=1
+  new_case
+  run_checkout v1
+  check 'shallow clone of a tag below the origin HEAD' "${TAG1}"
+  check_shallow 'new shallow clone holds only its tag' 1 v2
+  new_case
+  up="${CASE_DIR}/project/${UPSTREAM}"
+  run_git clone -q --depth 1 --branch v1 "${ORIGIN_URL}" "${up}"
+  run_git -C "${up}" config test.marker shallow
+  echo local >"${up}/file"
+  echo junk >"${up}/junk"
+  run_checkout v1
+  check 'own shallow clone is reused and reset to the same tag' "${TAG1}" shallow
+  check_shallow 'reused shallow clone fetches only its tag' 1 v2
+  new_case
+  up="${CASE_DIR}/project/${UPSTREAM}"
+  run_git clone -q --depth 1 --branch v1 "${ORIGIN_URL}" "${up}"
+  run_git -C "${up}" config test.marker shallow
+  run_checkout v2
+  check 'own shallow clone is reused and moved to another tag' "${TAG2}" shallow
+  check_shallow 'shallow clone moved to another tag keeps nothing of the old tag' 1 v1 \
+    "${TAG1}"
+  new_case
+  up="${CASE_DIR}/project/${UPSTREAM}"
+  run_git clone -q --depth 2 --branch v2 "${ORIGIN_URL}" "${up}"
+  run_git -C "${up}" config test.marker shallow
+  run_checkout v2
+  check 'own deeper shallow clone is reused at the same tag' "${TAG2}" shallow
+  check_shallow 'deeper shallow clone is cut to the requested depth' 1 v1 "${TAG1}"
+  new_case
+  up="${CASE_DIR}/project/${UPSTREAM}"
+  run_git clone -q "${ORIGIN_URL}" "${up}"
+  run_git -C "${up}" config test.marker full
+  run_checkout v1
+  check 'own full clone is cloned again as a shallow clone' "${TAG1}"
+  check_shallow 'full clone cloned again holds only its tag' 1 v2
+  for clone_depth in 1 full; do
+    for want in v1 v2; do
+      new_case
+      up="${CASE_DIR}/project/${UPSTREAM}"
+      if [[ "${clone_depth}" == 1 ]]; then
+        run_git clone -q --depth 1 --branch v1 "${ORIGIN_URL}" "${up}"
+      else
+        run_git clone -q "${ORIGIN_URL}" "${up}"
+        run_git -C "${up}" checkout -q v1
+      fi
+      run_git -C "${up}" config test.marker main
+      run_git -C "${up}" worktree add -q --detach "${CASE_DIR}/other" v1
+      echo local >"${up}/file"
+      refs="$(run_git -C "${up}" for-each-ref)"
+      run_checkout "${want}"
+      head="$(run_git -C "${up}" rev-parse HEAD 2>/dev/null)" || head=''
+      marker="$(run_git -C "${up}" config --local test.marker 2>/dev/null)" || marker=''
+      other="$(run_git -C "${CASE_DIR}/other" rev-parse HEAD 2>/dev/null)" || other=''
+      after="$(run_git -C "${up}" for-each-ref 2>/dev/null)" || after=''
+      desc="${clone_depth} main clone with another worktree, tag ${want}, is refused"
+      if [[ "${CASE_RC}" -eq 2 && "${head}" == "${TAG1}" &&
+        "$(<"${up}/file")" == 'local' && "${marker}" == 'main' &&
+        "${other}" == "${TAG1}" && "${after}" == "${refs}" ]] &&
+        grep -q "^checkout_upstream: .*${UPSTREAM}" "${CASE_DIR}/log" &&
+        run_git -C "${CASE_DIR}/other" status >/dev/null 2>&1 &&
+        run_git -C "${CASE_DIR}/other" cat-file -e "${TAG1}^{commit}"; then
+        pass "${desc}"
+      else
+        fail "${desc}" "exit code: ${CASE_RC}" "HEAD: ${head}" "other: ${other}" \
+          "refs before: ${refs}" "refs after: ${after}"
+      fi
+    done
+  done
+  new_case
+  up="${CASE_DIR}/project/${UPSTREAM}"
+  run_git clone -q --depth 1 --branch v1 "${ORIGIN_URL}" "${up}"
+  run_git -C "${up}" worktree add -q --detach "${CASE_DIR}/other" v1
+  run_git -C "${up}" symbolic-ref HEAD refs/heads/missing
+  run_checkout v2
+  other="$(run_git -C "${CASE_DIR}/other" rev-parse HEAD 2>/dev/null)" || other=''
+  desc='main clone with another worktree and HEAD on a missing branch is refused'
+  if [[ "${CASE_RC}" -eq 2 && -d "${up}/.git" && "${other}" == "${TAG1}" ]] &&
+    grep -q "^checkout_upstream: .*${UPSTREAM}" "${CASE_DIR}/log" &&
+    run_git -C "${CASE_DIR}/other" status >/dev/null 2>&1; then
+    pass "${desc}"
+  else
+    fail "${desc}" "exit code: ${CASE_RC}" "other: ${other}"
+  fi
+  new_case
+  up="${CASE_DIR}/project/${UPSTREAM}"
+  run_git clone -q --depth 1 --branch v1 "${ORIGIN_URL}" "${up}"
+  echo local >"${up}/file"
+  : >"${up}/.git/worktrees"
+  run_checkout v1
+  head="$(run_git -C "${up}" rev-parse HEAD 2>/dev/null)" || head=''
+  desc='main clone with .git/worktrees as a file is refused'
+  if [[ "${CASE_RC}" -eq 2 && -f "${up}/.git/worktrees" && "${head}" == "${TAG1}" &&
+    "$(<"${up}/file")" == 'local' ]] &&
+    grep -q "^checkout_upstream: .*${UPSTREAM}" "${CASE_DIR}/log"; then
+    pass "${desc}"
+  else
+    fail "${desc}" "exit code: ${CASE_RC}" "HEAD: ${head}"
+  fi
+  new_case
+  up="${CASE_DIR}/project/${UPSTREAM}"
+  run_git clone -q --depth 1 --branch v1 "${ORIGIN_URL}" "${up}"
+  run_git -C "${up}" worktree add -q --detach "${CASE_DIR}/other" v1
+  rm -rf "${CASE_DIR}/other"
+  run_checkout v1
+  desc='main clone with a stale worktree record is refused'
+  if [[ "${CASE_RC}" -eq 2 && -d "${up}/.git/worktrees" ]] &&
+    grep -q "^checkout_upstream: .*${UPSTREAM}" "${CASE_DIR}/log"; then
+    pass "${desc}"
+  else
+    fail "${desc}" "exit code: ${CASE_RC}"
+  fi
+  new_case
+  up="${CASE_DIR}/project/${UPSTREAM}"
+  run_git clone -q --depth 1 --branch v1 "${ORIGIN_URL}" "${up}"
+  run_git -C "${up}" worktree add -q --detach "${CASE_DIR}/other" v1
+  echo local >"${up}/file"
+  mv "${up}/.git/worktrees" "${CASE_DIR}/records"
+  echo "${up}/.git" >"${CASE_DIR}/records/other/commondir"
+  ln -s "${CASE_DIR}/records" "${up}/.git/worktrees"
+  run_checkout v1
+  check_worktrees_refused 'main clone with .git/worktrees as a symlink is refused' \
+    "${up}" sibling
+  new_case
+  run_git clone -q --depth 1 --branch v1 "${ORIGIN_URL}" "${CASE_DIR}/main"
+  run_git -C "${CASE_DIR}/main" worktree add -q --detach "${CASE_DIR}/other" v1
+  echo local >"${CASE_DIR}/main/file"
+  mkdir -p "${CASE_DIR}/project/sources/demo/_shared"
+  ln -s "${CASE_DIR}/main" "${CASE_DIR}/project/${UPSTREAM}"
+  run_checkout v1
+  check_worktrees_refused 'symlink to a main clone with another worktree is refused' \
+    "${CASE_DIR}/main" sibling
+  if [[ -L "${CASE_DIR}/project/${UPSTREAM}" && -d "${CASE_DIR}/main/.git" ]]; then
+    pass 'symlink to a main clone and its target are kept'
+  else
+    fail 'symlink to a main clone and its target are kept'
+  fi
+  new_case
+  up="${CASE_DIR}/project/${UPSTREAM}"
+  run_git clone -q --depth 1 --branch v1 "${ORIGIN_URL}" "${up}"
+  run_git -C "${up}" worktree add -q --detach "${CASE_DIR}/other" v1
+  echo local >"${up}/file"
+  mv "${up}/.git/worktrees/other" "${up}/.git/worktrees/.hidden"
+  run_checkout v1
+  check_worktrees_refused 'main clone with a hidden worktree record is refused' "${up}"
+  new_case
+  up="${CASE_DIR}/project/${UPSTREAM}"
+  run_git clone -q --depth 1 --branch v1 "${ORIGIN_URL}" "${up}"
+  echo local >"${up}/file"
+  mkdir -p "${up}/.git/worktrees/.empty"
+  run_checkout v1
+  check_worktrees_refused 'main clone with an empty hidden worktree record is refused' \
+    "${up}"
+  new_case
+  up="${CASE_DIR}/project/${UPSTREAM}"
+  run_git clone -q --depth 1 --branch v1 "${ORIGIN_URL}" "${up}"
+  run_git -C "${up}" worktree add -q --detach "${CASE_DIR}/other" v1
+  echo local >"${up}/file"
+  if [[ "$(id -u)" -eq 0 ]]; then
+    echo '  SKIP  main clone with an unreadable .git/worktrees is refused' \
+      '(root ignores permissions)'
+  else
+    chmod 000 "${up}/.git/worktrees"
+    run_checkout v1
+    chmod 755 "${up}/.git/worktrees"
+    check_worktrees_refused 'main clone with an unreadable .git/worktrees is refused' \
+      "${up}" sibling
+  fi
+  for desc in 'without .git' 'with an incomplete .git'; do
+    new_case
+    up="${CASE_DIR}/project/${UPSTREAM}"
+    mkdir -p "${up}"
+    [[ "${desc}" == 'without .git' ]] || mkdir -p "${up}/.git/objects"
+    echo partial >"${up}/file"
+    run_git -C "${CASE_DIR}/project" worktree add -q --detach \
+      "${CASE_DIR}/project-tree"
+    echo kept >"${CASE_DIR}/project-tree/untracked"
+    run_checkout v1
+    check "interrupted clone ${desc} in a project with a worktree is cloned again" \
+      "${TAG1}"
+    check_shallow "clone ${desc} in a project with a worktree is shallow" 1 v2
+    if run_git -C "${CASE_DIR}/project-tree" status >/dev/null 2>&1 &&
+      [[ -f "${CASE_DIR}/project-tree/untracked" ]]; then
+      pass "worktree of the project survives a clone ${desc}"
+    else
+      fail "worktree of the project survives a clone ${desc}"
+    fi
+  done
+  new_case
+  up="${CASE_DIR}/project/${UPSTREAM}"
+  run_git clone -q --depth 1 --branch v1 "${ORIGIN_URL}" "${CASE_DIR}/main"
+  run_git -C "${CASE_DIR}/main" checkout -q -b keep
+  run_git -C "${CASE_DIR}/main" worktree add -q --detach "${up}" v1
+  run_git -C "${up}" config test.marker linked
+  refs="$(run_git -C "${CASE_DIR}/main" for-each-ref)"
+  run_checkout v2
+  check 'linked worktree of a shallow clone is cloned again' "${TAG2}"
+  check_shallow 'worktree cloned again is shallow and holds only its tag' 1 v1 "${TAG1}"
+  after="$(run_git -C "${CASE_DIR}/main" for-each-ref)"
+  head="$(run_git -C "${CASE_DIR}/main" rev-parse HEAD)"
+  branch="$(run_git -C "${CASE_DIR}/main" symbolic-ref HEAD)"
+  if [[ "${after}" == "${refs}" && "${head}" == "${TAG1}" &&
+    "${branch}" == 'refs/heads/keep' ]] &&
+    run_git -C "${CASE_DIR}/main" status >/dev/null 2>&1 &&
+    run_git -C "${CASE_DIR}/main" cat-file -e "${TAG1}^{commit}"; then
+    pass 'refs and commits of the shared repository of the worktree are kept'
+  else
+    fail 'refs and commits of the shared repository of the worktree are kept' \
+      "refs before: ${refs}" \
+      "refs after: ${after}"
+  fi
+  for DEPTH in 0 01 -1 1x ' 1'; do
+    new_case
+    run_checkout v1
+    if [[ "${CASE_RC}" -eq 2 && ! -e "${CASE_DIR}/project/${UPSTREAM}" ]] &&
+      grep -q '^checkout_upstream: bad CHECKOUT_UPSTREAM_DEPTH=' "${CASE_DIR}/log"; then
+      pass "depth '${DEPTH}' is rejected"
+    else
+      fail "depth '${DEPTH}' is rejected" "exit code: ${CASE_RC}"
+    fi
+  done
+  unset DEPTH
   echo
   echo "Results: ${PASS} passed, ${FAIL} failed"
   [[ "${FAIL}" -eq 0 ]]

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cspell:ignore gpath nullglob toplevel
+# cspell:ignore gpath nullglob reflog toplevel wtdir
 set -ueo pipefail
 # shellcheck disable=2034
 PYENV_VERSION_PYTHON="${BUILD_PYENV_VERSION_PYTHON:-3.11.17}"
@@ -16,6 +16,16 @@ CHECKOUT_UPSTREAM_BASES=(
   "$(dirname "$(/usr/bin/env realpath -- "${BASH_SOURCE[0]}")")"
 )
 # Usage: checkout_upstream <repo_url> <repo_tag> <upstream_dir>
+# A positive integer in CHECKOUT_UPSTREAM_DEPTH, set only for the call, makes the clone
+# shallow with that depth: <repo_tag> must then be a tag, a new clone takes the history
+# of that tag to that depth and a reused clone fetches only that tag instead of all tags
+# and drops every other ref with the objects left unreachable. A reused clone must
+# already be shallow and not a linked worktree, else it is cloned again. After the checks
+# of the depth and the path but before any action on <upstream_dir>, a directory
+# <upstream_dir>/.git with a .git/worktrees that is not a readable empty directory, a
+# symlink to a directory followed and stale entries included, is left as is and returns
+# 2 without git.
+# Any other non-empty value, leading zeros included, fails.
 # <upstream_dir> is reused only as the top level of its own clone with HEAD at a commit
 # and no *.lock file left in its git directories. Anything else, like a clone interrupted
 # before its .git appeared, before HEAD was written or with its locks left behind, is
@@ -26,6 +36,12 @@ CHECKOUT_UPSTREAM_BASES=(
 checkout_upstream() {
   local _repo_url="$1" _repo_tag="$2" _upstream="$3" _top='' _dir='' _git_dir=''
   local _common='' _lock='' _path='' _base='' _chain='' _real=''
+  local _depth="${CHECKOUT_UPSTREAM_DEPTH:-}" _ref=''
+  local _shallow='' _wtdir='' _entries=''
+  if [[ -n "${_depth}" && ! "${_depth}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "checkout_upstream: bad CHECKOUT_UPSTREAM_DEPTH=${_depth}" >&2
+    return 2
+  fi
   _path="$(/usr/bin/env realpath -m -- "${_upstream}")"
   for _base in . "${CHECKOUT_UPSTREAM_BASES[@]}"; do
     _chain="$(CDPATH='' cd -- "${_base}" 2>/dev/null && pwd -L)" || _chain=''
@@ -38,6 +54,23 @@ checkout_upstream() {
       _chain="${_chain%/*}"
     done
   done
+  _wtdir="${_upstream}/.git/worktrees"
+  # Other worktrees would break when the main clone is removed, so this check relies
+  # on the file system only: not on git, HEAD, shallow state or locks.
+  if [[ -n "${_depth}" && -d "${_upstream}/.git" ]] &&
+    [[ -e "${_wtdir}" || -L "${_wtdir}" ]]; then
+    _entries='unreadable'
+    if [[ -d "${_wtdir}" && -r "${_wtdir}" && -x "${_wtdir}" ]]; then
+      _entries="$(/usr/bin/env find -H "${_wtdir}" -mindepth 1 -print -quit \
+        2>/dev/null)" || _entries='unreadable'
+    fi
+    if [[ -n "${_entries}" ]]; then
+      echo "checkout_upstream: ${_upstream} has other worktrees or records of them" \
+        '(or .git/worktrees is unreadable), remove them manually, for example with' \
+        'git worktree remove or git worktree prune, not touched' >&2
+      return 2
+    fi
+  fi
   if [[ -e "${_upstream}/.git" ]] &&
     /usr/bin/env git -C "${_upstream}" rev-parse -q --verify 'HEAD^{commit}' \
       >/dev/null 2>&1; then
@@ -50,17 +83,47 @@ checkout_upstream() {
       --git-common-dir 2>/dev/null)" || _common=''
     _lock="$(/usr/bin/env find "${_git_dir}" "${_common}" -name '*.lock' -print -quit \
       2>/dev/null)" || _lock='unreadable'
+    # With a depth, a clone that is not shallow or is a linked worktree is cloned again.
+    # An enclosing project found for a broken clone is not that clone.
+    if [[ -n "${_depth}" ]]; then
+      [[ -z "${_git_dir}" ]] || _git_dir="$(/usr/bin/env realpath -m -- "${_git_dir}")"
+      [[ -z "${_common}" ]] || _common="$(/usr/bin/env realpath -m -- "${_common}")"
+      _shallow="$(/usr/bin/env git -C "${_upstream}" rev-parse \
+        --is-shallow-repository 2>/dev/null)" || _shallow=''
+      if [[ "${_shallow}" != 'true' || "${_git_dir}" != "${_common}" ]]; then
+        _top=''
+      fi
+    fi
   fi
   if [[ -n "${_top}" && "${_top}" == "${_dir}" && -n "${_git_dir}" &&
     -z "${_lock}" ]]; then
     /usr/bin/env git -C "${_upstream}" reset --hard HEAD
     /usr/bin/env git -C "${_upstream}" clean -fd
-    /usr/bin/env git -C "${_upstream}" fetch --tags
+    if [[ -n "${_depth}" ]]; then
+      /usr/bin/env git -C "${_upstream}" fetch --depth "${_depth}" origin \
+        tag "${_repo_tag}"
+    else
+      /usr/bin/env git -C "${_upstream}" fetch --tags
+    fi
     /usr/bin/env git -C "${_upstream}" checkout "${_repo_tag}"
     /usr/bin/env git -C "${_upstream}" reset --hard "${_repo_tag}"
+    if [[ -n "${_depth}" ]]; then
+      # .git goes into images, so nothing of earlier tags may stay behind
+      while IFS= read -r _ref; do
+        [[ "${_ref}" == "refs/tags/${_repo_tag}" ]] ||
+          /usr/bin/env git -C "${_upstream}" update-ref --no-deref -d "${_ref}"
+      done < <(/usr/bin/env git -C "${_upstream}" for-each-ref --format='%(refname)')
+      /usr/bin/env git -C "${_upstream}" reflog expire --expire=now --all
+      /usr/bin/env git -C "${_upstream}" gc --prune=now --quiet
+    fi
   else
     /usr/bin/env rm -rf "${_upstream}"
-    /usr/bin/env git clone "${_repo_url}" "${_upstream}"
+    if [[ -n "${_depth}" ]]; then
+      /usr/bin/env git clone --depth "${_depth}" --branch "${_repo_tag}" \
+        "${_repo_url}" "${_upstream}"
+    else
+      /usr/bin/env git clone "${_repo_url}" "${_upstream}"
+    fi
     /usr/bin/env git -C "${_upstream}" checkout "${_repo_tag}"
   fi
 }
