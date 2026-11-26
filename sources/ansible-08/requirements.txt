@@ -10,7 +10,6 @@ ansible==8.7.0
 attrs==25.3.0
 bcrypt==4.3.0
 black==26.10.1
-bracex==2.6
 certifi==2026.10.19
 cffi==2.0.0
 charset-normalizer==3.4.2
