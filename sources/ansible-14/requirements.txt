@@ -3,19 +3,18 @@
 # psutil python-dateutil bcrypt passlib netaddr yamllint ansible-lint podman tomli lz4 \
 # zstd lzip pytest click-help-colors freezegun importlib_metadata typing_extensions \
 # ruamel.yaml.clib jmespath zipp mutmut
-ansible==14.5.0
 ansible-compat==26.10.0
 ansible-core==2.21.5
 ansible-lint==26.10.1
+ansible==14.5.0
 attrs==26.1.0
 bcrypt==5.0.0
 black==26.10.1
-bracex==3.1
 certifi==2026.10.19
 cffi==2.1.1
 charset-normalizer==3.5.2
-click==8.5.0
 click-help-colors==0.9.4
+click==8.5.0
 coverage==7.17.3
 cryptography==50.0.2
 decorator==5.3.1
@@ -34,8 +33,8 @@ Jinja2==3.1.6
 jmespath==1.1.0
 jsonpatch==1.42
 jsonpointer==3.8
-jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
+jsonschema==4.26.0
 keystoneauth1==5.18.1
 libcst==1.9.0
 linkify-it-py==2.2.0
@@ -45,8 +44,8 @@ markdown-it-py==4.2.0
 MarkupSafe==3.0.4
 mdit-py-plugins==0.7.0
 mdurl==0.1.2
-molecule==26.10.0
 molecule-plugins[podman,docker,vagrant,openstack]==26.10.12
+molecule==26.10.0
 mutmut==3.8.1
 mypy_extensions==1.1.0
 netaddr==1.3.0
@@ -72,8 +71,8 @@ requests==2.34.2
 resolvelib==1.2.1
 rich==15.0.0
 rpds-py==2026.9.1
-ruamel.yaml==0.19.1
 ruamel.yaml.clib==0.2.15
+ruamel.yaml==0.19.1
 selinux==0.3.0
 setproctitle==1.3.8
 setuptools==84.2.1
@@ -84,7 +83,7 @@ textual==8.2.8
 tomli==2.5.0
 typing_extensions==4.16.0
 urllib3==2.8.0
-wcmatch==11.1
+wcmatch==11.2
 yamllint==1.38.0
 yapf==0.43.0
 zipp==4.1.1
