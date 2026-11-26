@@ -10,7 +10,6 @@ ansible==7.7.0
 attrs==25.3.0
 bcrypt==4.3.0
 black==26.10.1
-bracex==2.6
 certifi==2026.10.19
 cffi==2.0.0
 charset-normalizer==3.4.2
@@ -73,7 +72,7 @@ textual==8.2.8
 tomli==2.2.1
 typing_extensions==4.14.1
 urllib3==2.8.0
-wcmatch==10.1
+wcmatch==11.2
 yamllint==1.37.1
 yapf==0.43.0
 zipp==3.23.0
